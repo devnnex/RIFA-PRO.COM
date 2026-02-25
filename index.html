@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RifaPro</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700;800&display=swap" rel="stylesheet">
+<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" rel="stylesheet">
+<link rel="stylesheet" href="./style.css">
+
+
+      <!-- 🧩 Favicon clásico -->
+  <link rel="icon" type="image/png" href="./images/favicon.png">
+
+  <!-- 📱 Ícono de app (iOS / Android) -->
+  <link rel="apple-touch-icon" href="./images/favicon.png">
+
+  <!-- 🧭 Configuración PWA -->
+  <meta name="theme-color" content="#000000">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="RIFA PRO">
+
+  <!-- 📜 Manifest -->
+  <link rel="manifest" href="./manifest.json">
+
+</head>
+<body>
+<button id="menuBtn" class="menu-btn" type="button" aria-label="Abrir menu">
+  <i class="fa-solid fa-bars"></i>
+</button>
+<div id="sidebarBackdrop" class="sidebar-backdrop" aria-hidden="true"></div>
+
+<div class="layout">
+  <aside id="sidebar" class="sidebar" aria-label="Panel de rifas">
+    <button id="btnCerrarSidebar" class="sidebar-close" type="button" aria-label="Cerrar menu">
+      <i class="fa-solid fa-xmark"></i>
+    </button>
+    <div class="panel-section">
+      <h2>Rifas</h2>
+      <div id="listaRifas" class="rifa-list"></div>
+    </div>
+
+    <div class="panel-section">
+      <h3>Nueva rifa</h3>
+      <div class="field-grid">
+        <input id="titulo" placeholder="Titulo" maxlength="80">
+        <input id="precio" type="text" inputmode="numeric" placeholder="Precio por numero ($10.000)" maxlength="20">
+        <input id="cantidad" type="number" min="1" placeholder="Cantidad de numeros">
+        <input id="premio" placeholder="Premio" maxlength="120">
+        <input id="loteria" placeholder="Loteria" maxlength="60">
+        <input id="fecha" type="date">
+        <input id="hora" type="time">
+        <input id="responsable" placeholder="Responsable" maxlength="80">
+      </div>
+      <button id="btnCrearRifa" type="button">Crear rifa</button>
+    </div>
+
+    <div class="panel-section">
+      <h3>Apariencia</h3>
+      <button id="themeToggle" class="theme-toggle" type="button" aria-label="Cambiar modo de color">
+        <span id="themeLabel">Modo noche</span>
+        <i id="themeIcon" class="fa-solid fa-moon"></i>
+      </button>
+    </div>
+  </aside>
+
+  <main class="content">
+    <section id="infoRifa" class="card info-card"></section>
+
+    <section class="card">
+      <div class="kpis">
+        <article class="kpi" id="kpiLibres"></article>
+        <article class="kpi" id="kpiApartados"></article>
+        <article class="kpi" id="kpiPagados"></article>
+        <article class="kpi" id="kpiRecaudado"></article>
+      </div>
+      <div class="progress">
+        <div id="barra" class="progress-bar"></div>
+      </div>
+      <p id="porcentajeTexto" class="progress-text"></p>
+    </section>
+
+    <section id="dashboard" class="dashboard"></section>
+    <nav id="paginacion" class="pagination"></nav>
+  </main>
+</div>
+
+<div id="modal" class="modal" aria-hidden="true">
+  <div class="modal-content">
+    <h3>Editar numero</h3>
+    <input id="clienteNombre" placeholder="Nombre del cliente" maxlength="80">
+    <input id="clienteTelefono" placeholder="Telefono" maxlength="30">
+    <select id="estadoSelect">
+      <option value="libre">Libre</option>
+      <option value="apartado">Apartado</option>
+      <option value="pagado">Pagado</option>
+    </select>
+
+    <div class="modal-actions">
+      <button id="btnGuardarNumero" type="button">Guardar</button>
+      <button id="btnLiberarNumero" type="button" class="danger">Liberar</button>
+      <button id="btnCerrarModal" type="button" class="secondary">Cerrar</button>
+    </div>
+  </div>
+</div>
+
+<div id="pinModal" class="modal" aria-hidden="true">
+  <div class="modal-content pin-modal-content">
+    <h3>Validacion de seguridad</h3>
+    <p class="pin-help">Este numero ya esta apartado o pagado. Ingresa PIN de 4 digitos.</p>
+    <input id="pinInput" type="password" inputmode="numeric" maxlength="4" placeholder="****">
+    <div class="modal-actions">
+      <button id="btnPinConfirmar" type="button">Validar</button>
+      <button id="btnPinCancelar" type="button" class="secondary">Cancelar</button>
+    </div>
+  </div>
+</div>
+
+<script src="./app.js" defer></script>
+</body>
+</html>
