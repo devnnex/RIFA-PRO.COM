@@ -449,6 +449,73 @@ button.danger {
   color: var(--muted);
 }
 
+.btn-spinner {
+  display: inline-block;
+  width: 0;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+  border-radius: 50%;
+  margin-left: 0;
+  opacity: 0;
+  vertical-align: middle;
+  transition: width 0.2s ease, opacity 0.2s ease, margin-left 0.2s ease;
+}
+
+.btn-spinner.show {
+  width: 14px;
+  opacity: 1;
+  margin-left: 8px;
+  animation: spin 0.8s linear infinite;
+}
+
+.app-loader {
+  position: fixed;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(8, 18, 33, 0.45);
+  z-index: 120;
+}
+
+.app-loader.show {
+  display: flex;
+}
+
+.loader-card {
+  min-width: 220px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: var(--shadow);
+  border: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.loader-card p {
+  margin: 0;
+  font-weight: 700;
+  color: #1e3148;
+}
+
+.loader-ring {
+  width: 18px;
+  height: 18px;
+  border: 3px solid rgba(0, 95, 214, 0.2);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 body.dark-mode input,
 body.dark-mode select,
 body.dark-mode .kpi,
@@ -471,6 +538,15 @@ body.dark-mode .sidebar-close {
 }
 
 body.dark-mode .rifa-title {
+  color: var(--text);
+}
+
+body.dark-mode .loader-card {
+  background: #13253d;
+  border-color: var(--border);
+}
+
+body.dark-mode .loader-card p {
   color: var(--text);
 }
 
