@@ -110,13 +110,23 @@
 
 <div id="pinModal" class="modal" aria-hidden="true">
   <div class="modal-content pin-modal-content">
-    <h3>Validacion de seguridad</h3>
-    <p class="pin-help">Este numero ya esta apartado o pagado. Ingresa PIN de 4 digitos.</p>
+    <h3 id="pinTitle">Validacion de seguridad</h3>
+    <p id="pinHelp" class="pin-help">Este numero ya esta apartado o pagado. Ingresa PIN de 4 digitos.</p>
     <input id="pinInput" type="password" inputmode="numeric" maxlength="4" placeholder="****">
     <div class="modal-actions">
-      <button id="btnPinConfirmar" type="button">Validar</button>
+      <button id="btnPinConfirmar" type="button">
+        <span id="pinBtnText">Validar</span>
+        <span id="pinBtnSpinner" class="btn-spinner" aria-hidden="true"></span>
+      </button>
       <button id="btnPinCancelar" type="button" class="secondary">Cancelar</button>
     </div>
+  </div>
+</div>
+
+<div id="appLoader" class="app-loader" aria-hidden="true">
+  <div class="loader-card">
+    <span class="loader-ring"></span>
+    <p id="appLoaderText">Cargando datos...</p>
   </div>
 </div>
 
