@@ -2,6 +2,7 @@ const STORAGE_RIFAS = "rifapro.rifas";
 const STORAGE_QUEUE = "rifapro.syncQueue";
 const STORAGE_THEME = "rifapro.theme";
 const DEFAULT_SYNC_URL = "https://script.google.com/macros/s/AKfycbxYlC9MHAzYz6prdH32ZQZhZVw6U9eWkRssrJYrGHy8FPe3Zwwm1Ne9ftMrIf7OiYzc/exec";
+const LIVE_SYNC_INTERVAL_MS = 2000;
 
 const MOBILE_BREAKPOINT = 768;
 const MOBILE_PAGE_SIZE = 40;
@@ -11,6 +12,8 @@ let rifaActivaId = null;
 let numeroActualIndex = null;
 let pagina = 1;
 let flushingQueue = false;
+let loaderCounter = 0;
+let syncInFlight = false;
 
 const syncState = {
   url: "",
@@ -18,6 +21,7 @@ const syncState = {
   lastStatus: ""
 };
 let pinModalResolver = null;
+let pinModalCleanup = null;
 
 const els = {};
 
@@ -48,10 +52,10 @@ function init() {
   });
 
   if (syncState.url) {
-    sincronizarTodo();
+    sincronizarTodo(true);
     window.setInterval(() => {
-      sincronizarTodo();
-    }, 15000);
+      sincronizarTodo(false);
+    }, LIVE_SYNC_INTERVAL_MS);
   }
 }
 
@@ -61,7 +65,8 @@ function mapElements() {
     "btnCrearRifa", "themeToggle", "themeIcon", "themeLabel", "infoRifa", "kpiLibres", "kpiApartados",
     "kpiPagados", "kpiRecaudado", "barra", "porcentajeTexto", "dashboard", "paginacion", "modal", "clienteNombre",
     "clienteTelefono", "estadoSelect", "btnGuardarNumero", "btnLiberarNumero", "btnCerrarModal",
-    "pinModal", "pinInput", "btnPinConfirmar", "btnPinCancelar"
+    "pinModal", "pinTitle", "pinHelp", "pinInput", "btnPinConfirmar", "btnPinCancelar", "pinBtnSpinner", "pinBtnText",
+    "appLoader", "appLoaderText"
   ];
 
   ids.forEach((id) => {
@@ -112,6 +117,20 @@ function writeRifas() {
 
 function writeQueue() {
   localStorage.setItem(STORAGE_QUEUE, JSON.stringify(syncState.queue));
+}
+
+function showAppLoader(message = "Cargando datos...") {
+  loaderCounter += 1;
+  els.appLoaderText.textContent = message;
+  els.appLoader.classList.add("show");
+  els.appLoader.setAttribute("aria-hidden", "false");
+}
+
+function hideAppLoader() {
+  loaderCounter = Math.max(0, loaderCounter - 1);
+  if (loaderCounter > 0) return;
+  els.appLoader.classList.remove("show");
+  els.appLoader.setAttribute("aria-hidden", "true");
 }
 
 function normalizeText(value) {
@@ -237,7 +256,7 @@ function toggleTheme() {
   applyTheme(next);
 }
 
-function createNumeros(cantidad, rifaId) {
+function createNumeros(cantidad, rifaId, defaultUpdatedAt = "") {
   const safeCantidad = Math.max(1, Number(cantidad) || 1);
   const padding = Math.max(2, String(safeCantidad - 1).length);
   const numbers = [];
@@ -249,7 +268,7 @@ function createNumeros(cantidad, rifaId) {
       n: numeroId,
       estado: "libre",
       cliente: null,
-      updatedAt: new Date().toISOString()
+      updatedAt: defaultUpdatedAt
     });
   }
 
@@ -271,11 +290,14 @@ function crearRifaDesdeMeta(meta) {
     hora: normalizeText(meta.hora),
     responsable: normalizeText(meta.responsable),
     createdAt: new Date().toISOString(),
-    numeros: createNumeros(cantidad, rifaId)
+    numeros: createNumeros(cantidad, rifaId, "")
   };
 }
 
-function crearRifa() {
+async function crearRifa() {
+  const autorizado = await validarPinAdmin("Ingresa PIN de 4 digitos para crear una rifa.");
+  if (!autorizado) return;
+
   const cantidad = Number(els.cantidad.value);
   const precio = parseMoneyValue(els.precio.value);
   const nueva = {
@@ -302,7 +324,7 @@ function crearRifa() {
     return;
   }
 
-  nueva.numeros = createNumeros(nueva.cantidad, nueva.id);
+  nueva.numeros = createNumeros(nueva.cantidad, nueva.id, new Date().toISOString());
 
   rifas.unshift(nueva);
   rifaActivaId = nueva.id;
@@ -359,10 +381,9 @@ function renderLista() {
   });
 }
 
-function eliminarRifa(id) {
-  if (!confirm("Eliminar esta rifa y sus registros?")) {
-    return;
-  }
+async function eliminarRifa(id) {
+  const autorizado = await validarPinAdmin("Ingresa PIN de 4 digitos para eliminar esta rifa.");
+  if (!autorizado) return;
 
   rifas = rifas.filter((rifa) => rifa.id !== id);
   if (rifaActivaId === id) {
@@ -380,7 +401,7 @@ function eliminarRifa(id) {
   flushQueue();
 }
 
-function abrirRifa(id) {
+async function abrirRifa(id) {
   rifaActivaId = id;
   pagina = 1;
   renderLista();
@@ -388,7 +409,12 @@ function abrirRifa(id) {
 
   const rifa = getRifaActiva();
   if (rifa) {
-    cargarRifaDesdeSheets(rifa);
+    showAppLoader("Cargando casillas ocupadas...");
+    try {
+      await cargarRifaDesdeSheets(rifa);
+    } finally {
+      hideAppLoader();
+    }
   }
 
   if (window.innerWidth <= MOBILE_BREAKPOINT) {
@@ -557,43 +583,91 @@ async function validarPinEdicion() {
     return false;
   }
 
-  const pinRaw = await openPinModal();
+  const pinRaw = await openPinModal({
+    title: "Validacion de seguridad",
+    help: "Este numero ya esta apartado o pagado. Ingresa PIN de 4 digitos."
+  });
   if (pinRaw === null) {
     return false;
   }
 
   const pin = String(pinRaw).replace(/\D/g, "").slice(0, 4);
   if (pin.length !== 4) {
+    closePinModal();
     alert("PIN invalido. Debe tener 4 digitos.");
     return false;
   }
 
+  return verificarPinYFinalizar(pin);
+}
+
+async function validarPinAdmin(helpText) {
+  if (!syncState.url || !navigator.onLine) {
+    alert("Se requiere conexion para validar PIN.");
+    return false;
+  }
+
+  const pinRaw = await openPinModal({
+    title: "Validacion de seguridad",
+    help: helpText
+  });
+  if (pinRaw === null) {
+    return false;
+  }
+
+  const pin = String(pinRaw).replace(/\D/g, "").slice(0, 4);
+  if (pin.length !== 4) {
+    closePinModal();
+    alert("PIN invalido. Debe tener 4 digitos.");
+    return false;
+  }
+
+  return verificarPinYFinalizar(pin);
+}
+
+async function verificarPinYFinalizar(pin) {
   try {
+    setPinLoading(true);
     const response = await apiGet("verifyPin", { payload: JSON.stringify({ pin }) });
+    setPinLoading(false);
     if (response && response.ok && response.valid === true) {
+      closePinModal();
       return true;
     }
 
+    closePinModal();
     alert("PIN incorrecto.");
     return false;
   } catch (error) {
+    setPinLoading(false);
+    closePinModal();
     alert("No fue posible validar el PIN.");
     return false;
   }
 }
 
-function openPinModal() {
+function openPinModal(options = {}) {
   return new Promise((resolve) => {
     pinModalResolver = resolve;
+    if (pinModalCleanup) {
+      pinModalCleanup();
+      pinModalCleanup = null;
+    }
     els.pinInput.value = "";
+    setPinLoading(false);
+    els.pinTitle.textContent = options.title || "Validacion de seguridad";
+    els.pinHelp.textContent = options.help || "Ingresa PIN de 4 digitos.";
     els.pinModal.classList.add("show");
     els.pinModal.setAttribute("aria-hidden", "false");
     els.pinInput.focus();
 
     const onConfirm = () => {
       const value = els.pinInput.value || "";
-      closePinModal(value, true);
       cleanup();
+      if (pinModalResolver) {
+        pinModalResolver(value);
+        pinModalResolver = null;
+      }
     };
 
     const onCancel = () => {
@@ -614,7 +688,9 @@ function openPinModal() {
       els.btnPinConfirmar.removeEventListener("click", onConfirm);
       els.btnPinCancelar.removeEventListener("click", onCancel);
       els.pinInput.removeEventListener("keydown", onEnter);
+      pinModalCleanup = null;
     };
+    pinModalCleanup = cleanup;
 
     els.btnPinConfirmar.addEventListener("click", onConfirm);
     els.btnPinCancelar.addEventListener("click", onCancel);
@@ -625,11 +701,24 @@ function openPinModal() {
 function closePinModal(result = null, shouldResolve = false) {
   els.pinModal.classList.remove("show");
   els.pinModal.setAttribute("aria-hidden", "true");
+  setPinLoading(false);
+
+  if (pinModalCleanup) {
+    pinModalCleanup();
+  }
 
   if (shouldResolve && pinModalResolver) {
     pinModalResolver(result);
     pinModalResolver = null;
   }
+}
+
+function setPinLoading(isLoading) {
+  els.btnPinConfirmar.disabled = isLoading;
+  els.btnPinCancelar.disabled = isLoading;
+  els.pinInput.disabled = isLoading;
+  els.pinBtnSpinner.classList.toggle("show", isLoading);
+  els.pinBtnText.textContent = isLoading ? "Validando..." : "Validar";
 }
 
 function cerrarModal() {
@@ -889,8 +978,9 @@ async function cargarRifaDesdeSheets(rifa) {
 
       const remoteDate = record.updatedAt ? new Date(record.updatedAt).getTime() : 0;
       const localDate = local.updatedAt ? new Date(local.updatedAt).getTime() : 0;
+      const localEsInicial = local.estado === "libre" && !local.cliente;
 
-      if (remoteDate >= localDate) {
+      if (localEsInicial || remoteDate >= localDate) {
         local.estado = record.estado || "libre";
         local.updatedAt = record.updatedAt || new Date().toISOString();
         local.cliente = local.estado === "libre"
@@ -912,10 +1002,18 @@ async function cargarRifaDesdeSheets(rifa) {
   }
 }
 
-async function sincronizarTodo() {
+async function sincronizarTodo(showLoader = false) {
   if (!syncState.url) {
     setSyncStatus("Configura primero la URL de Apps Script.");
     return;
+  }
+  if (syncInFlight) {
+    return;
+  }
+  syncInFlight = true;
+
+  if (showLoader) {
+    showAppLoader("Cargando casillas ocupadas...");
   }
 
   setSyncStatus("Sincronizando...");
@@ -925,8 +1023,7 @@ async function sincronizarTodo() {
 
     if (!rifaActivaId && rifas.length) {
       rifaActivaId = rifas[0].id;
-      renderLista();
-      renderRifa();
+      pagina = 1;
     }
 
     const rifa = getRifaActiva();
@@ -934,12 +1031,20 @@ async function sincronizarTodo() {
       await cargarRifaDesdeSheets(rifa);
     }
 
+    renderLista();
+    renderRifa();
+
     await flushQueue();
     if (!syncState.queue.length) {
       setSyncStatus("Sync al dia");
     }
   } catch (error) {
     setSyncStatus("Error de conexion con Apps Script.");
+  } finally {
+    syncInFlight = false;
+    if (showLoader) {
+      hideAppLoader();
+    }
   }
 }
 
