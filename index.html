@@ -1,135 +1,75 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="es">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RifaPro</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700;800&display=swap" rel="stylesheet">
-<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" rel="stylesheet">
-<link rel="stylesheet" href="./style.css">
-
-
-      <!-- 🧩 Favicon clásico -->
-  <link rel="icon" type="image/png" href="./images/favicon.png">
-
-  <!-- 📱 Ícono de app (iOS / Android) -->
-  <link rel="apple-touch-icon" href="./images/favicon.png">
-
-  <!-- 🧭 Configuración PWA -->
-  <meta name="theme-color" content="#000000">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="description" content="Elige tu número y participa. Consulta los detalles de la rifa y reserva desde tu celular.">
+  <meta name="theme-color" content="#17283d">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="RIFA PRO">
-
-  <!-- 📜 Manifest -->
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Rifa Pro">
+  <title>Rifa Pro · Tu próximo número de la suerte</title>
+  <link rel="icon" href="./images/logo.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="./images/apple-touch-icon.png">
   <link rel="manifest" href="./manifest.json">
-
+  <link rel="stylesheet" href="./style.css">
+  <script src="./config.js" defer></script>
+  <script src="./app.js" defer></script>
 </head>
 <body>
-<button id="menuBtn" class="menu-btn" type="button" aria-label="Abrir menu">
-  <i class="fa-solid fa-bars"></i>
-</button>
-<div id="sidebarBackdrop" class="sidebar-backdrop" aria-hidden="true"></div>
-
-<div class="layout">
-  <aside id="sidebar" class="sidebar" aria-label="Panel de rifas">
-    <button id="btnCerrarSidebar" class="sidebar-close" type="button" aria-label="Cerrar menu">
-      <i class="fa-solid fa-xmark"></i>
-    </button>
-    <div class="panel-section">
-      <h2>Rifas</h2>
-      <div id="listaRifas" class="rifa-list"></div>
-    </div>
-
-    <div class="panel-section">
-      <h3>Nueva rifa</h3>
-      <div class="field-grid">
-        <input id="titulo" placeholder="Titulo" maxlength="80">
-        <input id="precio" type="text" inputmode="numeric" placeholder="Precio por numero ($10.000)" maxlength="20">
-        <input id="cantidad" type="number" min="1" placeholder="Cantidad de numeros">
-        <input id="premio" placeholder="Premio" maxlength="120">
-        <input id="loteria" placeholder="Loteria" maxlength="60">
-        <input id="fecha" type="date">
-        <input id="hora" type="time">
-        <input id="responsable" placeholder="Responsable" maxlength="80">
+  <a class="skip-link" href="#numeros">Ir a los números</a>
+  <header class="topbar">
+    <a class="brand" href="./" aria-label="Rifa Pro, inicio"><img src="./images/logo.svg" width="44" height="44" alt=""><span>RIFA<span class="brand-light">PRO</span><small>UN NÚMERO. MUCHAS POSIBILIDADES.</small></span></a>
+    <nav class="header-actions" aria-label="Opciones">
+      <span id="connection" class="connection" role="status"><span class="status-dot"></span><span id="connectionText">Conectando</span></span>
+      <button id="themeToggle" class="icon-button" type="button" aria-label="Activar modo oscuro" title="Cambiar apariencia">◐</button>
+      <button id="adminButton" class="button button-outline button-small" type="button"><span aria-hidden="true">♙</span> <span id="adminButtonText">Administrador</span></button>
+    </nav>
+  </header>
+  <main class="shell">
+    <div class="page-intro"><p class="eyebrow">LA SUERTE EMPIEZA CON UN NÚMERO</p><div class="intro-line"><h1>Tu próximo número<br>puede ser <em>el ganador.</em></h1><p>Elige el tuyo, reserva y participa.<br>Así de fácil, estés donde estés.</p></div></div>
+    <div class="workspace">
+      <aside class="raffle-sidebar" aria-label="Rifas y detalles">
+        <div class="sidebar-heading"><h2>Nuestras rifas</h2><span id="raffleCount" class="count-badge">0</span></div>
+        <div id="listaRifas" class="raffle-list"><p class="muted">Buscando rifas…</p></div>
+        <button id="newRaffleButton" class="button button-outline admin-only" type="button" hidden>＋ Crear una rifa</button>
+        <div class="sidebar-note"><span class="note-mark" aria-hidden="true">✧</span><h3>Tu suerte, a un toque.</h3><p>Los números se confirman en línea. Si alguien se adelanta, te avisamos antes de reservar.</p></div>
+        <button id="installButton" class="install-button" type="button" hidden><span aria-hidden="true">↓</span><span>Siempre a la mano<small>Instalar Rifa Pro</small></span><span aria-hidden="true">↗</span></button>
+        <button id="shareButton" class="button button-quiet" type="button">↗ Compartir esta rifa</button>
+      </aside>
+      <div class="raffle-main">
+        <section id="infoRifa" class="raffle-ticket" aria-live="polite"></section>
+        <section id="adminSummary" class="admin-summary admin-only" hidden aria-label="Resumen privado del administrador">
+          <div class="section-top"><div><p class="eyebrow">SOLO ADMINISTRADOR</p><h2>El resumen de tu rifa</h2></div><span class="private-badge">Acceso privado</span></div>
+          <div class="kpis"><article id="kpiLibres" class="kpi"></article><article id="kpiApartados" class="kpi"></article><article id="kpiPagados" class="kpi"></article><article id="kpiRecaudado" class="kpi kpi-featured"></article></div>
+          <div class="payment-summary"><article class="payment-total transfer"><span class="payment-icon" aria-hidden="true">↗</span><div><small>Nequi / transferencia</small><strong id="totalTransfer">—</strong></div></article><article class="payment-total cash"><span class="payment-icon" aria-hidden="true">▤</span><div><small>Efectivo</small><strong id="totalCash">—</strong></div></article><p id="unclassifiedPayments" class="muted" hidden></p></div>
+          <div class="progress" role="progressbar" aria-label="Recaudo de la rifa" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="barra"></div></div><p id="porcentajeTexto" class="progress-text"></p>
+        </section>
+        <section id="numeros" class="numbers-panel" aria-labelledby="numbersTitle">
+          <div class="section-top"><div><p class="eyebrow">ELIGE CON EL CORAZÓN</p><h2 id="numbersTitle">Encuentra tu número</h2></div><span class="live-label"><span class="status-dot"></span> Disponibilidad en línea</span></div>
+          <div class="number-tools"><div class="legend"><span><i class="legend-free"></i>Libre</span><span><i class="legend-reserved"></i>Reservado</span><span id="paidLegend" hidden><i class="legend-paid"></i>Pagado</span></div><label class="search-box"><span aria-hidden="true">⌕</span><input id="numberSearch" type="search" inputmode="numeric" autocomplete="off" placeholder="Buscar número" aria-label="Buscar número"><kbd aria-hidden="true">#</kbd></label></div>
+          <div id="dashboard" class="dashboard" aria-label="Números de la rifa"></div>
+          <nav id="paginacion" class="pagination" aria-label="Páginas de números"></nav>
+          <p class="reservation-hint"><span aria-hidden="true">ⓘ</span> Tu número queda reservado cuando recibes la confirmación. El pago se acuerda con la persona responsable.</p>
+        </section>
       </div>
-      <button id="btnCrearRifa" type="button">Crear rifa</button>
     </div>
-
-    <div class="panel-section">
-      <h3>Apariencia</h3>
-      <button id="themeToggle" class="theme-toggle" type="button" aria-label="Cambiar modo de color">
-        <span id="themeLabel">Modo noche</span>
-        <i id="themeIcon" class="fa-solid fa-moon"></i>
-      </button>
-    </div>
-  </aside>
-
-  <main class="content">
-    <section id="infoRifa" class="card info-card"></section>
-
-    <section class="card">
-      <div class="kpis">
-        <article class="kpi" id="kpiLibres"></article>
-        <article class="kpi" id="kpiApartados"></article>
-        <article class="kpi" id="kpiPagados"></article>
-        <article class="kpi" id="kpiRecaudado"></article>
-      </div>
-      <div class="progress">
-        <div id="barra" class="progress-bar"></div>
-      </div>
-      <p id="porcentajeTexto" class="progress-text"></p>
-    </section>
-
-    <section id="dashboard" class="dashboard"></section>
-    <nav id="paginacion" class="pagination"></nav>
+    <footer class="footer"><span class="footer-brand">RIFA PRO <span>·</span> Hecho para compartir la ilusión.</span><span>Elige. Reserva. Participa.</span></footer>
   </main>
-</div>
-
-<div id="modal" class="modal" aria-hidden="true">
-  <div class="modal-content">
-    <h3>Editar numero</h3>
-    <input id="clienteNombre" placeholder="Nombre del cliente" maxlength="80">
-    <input id="clienteTelefono" placeholder="Telefono" maxlength="30">
-    <select id="estadoSelect">
-      <option value="libre">Libre</option>
-      <option value="apartado">Apartado</option>
-      <option value="pagado">Pagado</option>
-    </select>
-
-    <div class="modal-actions">
-      <button id="btnGuardarNumero" type="button">Guardar</button>
-      <button id="btnLiberarNumero" type="button" class="danger">Liberar</button>
-      <button id="btnCerrarModal" type="button" class="secondary">Cerrar</button>
-    </div>
-  </div>
-</div>
-
-<div id="pinModal" class="modal" aria-hidden="true">
-  <div class="modal-content pin-modal-content">
-    <h3 id="pinTitle">Validacion de seguridad</h3>
-    <p id="pinHelp" class="pin-help">Este numero ya esta apartado o pagado. Ingresa PIN de 4 digitos.</p>
-    <input id="pinInput" type="password" inputmode="numeric" maxlength="4" placeholder="****">
-    <div class="modal-actions">
-      <button id="btnPinConfirmar" type="button">
-        <span id="pinBtnText">Validar</span>
-        <span id="pinBtnSpinner" class="btn-spinner" aria-hidden="true"></span>
-      </button>
-      <button id="btnPinCancelar" type="button" class="secondary">Cancelar</button>
-    </div>
-  </div>
-</div>
-
-<div id="appLoader" class="app-loader" aria-hidden="true">
-  <div class="loader-card">
-    <span class="loader-ring"></span>
-    <p id="appLoaderText">Cargando datos...</p>
-  </div>
-</div>
-
-<script src="./app.js" defer></script>
+  <dialog id="numberDialog" aria-labelledby="numberDialogTitle"><form id="numberForm">
+    <div class="dialog-top"><p class="eyebrow">TU NÚMERO DE LA SUERTE</p><button class="close-button" type="button" data-close="numberDialog" aria-label="Cerrar">×</button></div>
+    <div id="selectedNumber" class="selected-number"></div><h2 id="numberDialogTitle">Un paso más para participar</h2><p id="numberHelp" class="muted">Completa tus datos y confirma tu reserva.</p>
+    <label>Tu nombre<input id="clienteNombre" name="nombre" autocomplete="name" maxlength="80" required placeholder="¿A nombre de quién reservamos?"></label>
+    <label>Celular<input id="clienteTelefono" name="telefono" type="tel" autocomplete="tel" inputmode="tel" maxlength="30" required placeholder="Ej. 300 123 4567"><small>Solo lo verá el administrador para contactarte.</small></label>
+    <label id="stateField" hidden>Estado del número<select id="estadoSelect"><option value="apartado">Apartado</option><option value="pagado">Pagado</option></select></label>
+    <fieldset id="paymentField" class="payment-field" hidden><legend>¿Cómo pagó el cliente?</legend><div class="payment-options"><label class="payment-option transfer"><input type="radio" name="paymentMethod" value="transferencia"><span class="payment-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="6" y="2" width="12" height="20" rx="3"/><path d="M10 18h4M9 10h6m-3-3 3 3-3 3"/></svg></span><span><strong>Nequi</strong><small>Transferencia</small></span><span class="radio-mark"></span></label><label class="payment-option cash"><input type="radio" name="paymentMethod" value="efectivo"><span class="payment-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="2" y="5" width="20" height="14" rx="3"/><circle cx="12" cy="12" r="3"/><path d="M5 9h1m12 6h1"/></svg></span><span><strong>Efectivo</strong><small>Pago en mano</small></span><span class="radio-mark"></span></label></div></fieldset>
+    <p id="numberError" class="form-error" role="alert"></p><button id="saveNumberButton" class="button button-primary" type="submit">Confirmar mi reserva <span aria-hidden="true">→</span></button>
+    <button id="releaseNumberButton" class="button button-danger" type="button" hidden>Liberar este número</button><p class="dialog-footnote">La primera reserva que confirme el servidor se queda con el número.</p>
+  </form></dialog>
+  <dialog id="noticeDialog" aria-labelledby="noticeTitle"><div class="dialog-top"><p class="eyebrow">INFORMACIÓN DE LA RESERVA</p><button class="close-button" type="button" data-close="noticeDialog" aria-label="Cerrar">×</button></div><span id="noticeSymbol" class="notice-symbol" aria-hidden="true">✧</span><h2 id="noticeTitle"></h2><p id="noticeMessage" class="muted"></p><button class="button button-primary" type="button" data-close="noticeDialog">Entendido</button></dialog>
+  <dialog id="adminDialog" aria-labelledby="adminTitle"><form id="adminForm"><div class="dialog-top"><p class="eyebrow">ESPACIO DEL ORGANIZADOR</p><button class="close-button" type="button" data-close="adminDialog" aria-label="Cerrar">×</button></div><h2 id="adminTitle">Tu rifa, en detalle.</h2><p class="muted">Ingresa tu contraseña para consultar el recaudo, gestionar pagos y crear rifas.</p><label>Contraseña de administrador<input id="pinInput" type="password" inputmode="numeric" pattern="[0-9]{4}" minlength="4" maxlength="4" autocomplete="current-password" required placeholder="••••"></label><p id="adminError" class="form-error" role="alert"></p><button id="loginButton" class="button button-primary" type="submit">Entrar al resumen <span aria-hidden="true">→</span></button></form></dialog>
+  <dialog id="raffleDialog" class="wide-dialog" aria-labelledby="raffleDialogTitle"><form id="raffleForm"><div class="dialog-top"><p class="eyebrow">CREA Y COMPARTE</p><button class="close-button" type="button" data-close="raffleDialog" aria-label="Cerrar">×</button></div><h2 id="raffleDialogTitle">Una nueva oportunidad.</h2><div class="field-grid"><label class="full-field">Nombre de la rifa<input id="titulo" maxlength="80" required placeholder="Ej. Rifa de $500.000"></label><label>Valor por número (COP)<input id="precio" type="number" inputmode="numeric" min="1" max="100000000" step="1" required value="20000"></label><label>Cantidad de números<input id="cantidad" type="number" min="2" max="100000" step="1" required value="100"></label><label class="full-field">Premio<input id="premio" maxlength="120" required placeholder="Ej. $500.000 en efectivo"></label><label>Lotería<input id="loteria" maxlength="60" required value="Boyacá"></label><label>Fecha del sorteo<input id="fecha" type="date" required></label><label>Hora límite de pago<input id="hora" type="time" required value="17:00"></label><label>Responsable<input id="responsable" maxlength="80" required></label><label class="full-field">Condiciones<input id="condiciones" maxlength="500" placeholder="Sin pago a la hora límite se pierde el derecho al premio."></label></div><p id="raffleError" class="form-error" role="alert"></p><button id="createRaffleButton" class="button button-primary" type="submit">Crear rifa <span aria-hidden="true">→</span></button></form></dialog>
+  <div id="toast" class="toast" role="status" hidden></div>
 </body>
 </html>

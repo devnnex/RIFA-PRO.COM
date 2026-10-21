@@ -1,1138 +1,342 @@
-const STORAGE_RIFAS = "rifapro.rifas";
-const STORAGE_QUEUE = "rifapro.syncQueue";
-const STORAGE_THEME = "rifapro.theme";
-const DEFAULT_SYNC_URL = "https://script.google.com/macros/s/AKfycbxYlC9MHAzYz6prdH32ZQZhZVw6U9eWkRssrJYrGHy8FPe3Zwwm1Ne9ftMrIf7OiYzc/exec";
-const LIVE_SYNC_INTERVAL_MS = 2000;
+/* Rifa Pro. Public data and admin data follow separate server contracts. */
+"use strict";
+const CONFIG = window.RIFA_CONFIG;
+const CACHE_KEY = "rifapro.public.v2";
+const $ = (id) => document.getElementById(id);
+const state = { rifas: [], activeId: null, records: [], summary: null, token: null,
+  expiresAt: 0, protocol: false, online: false, refreshing: false, generation: 0,
+  page: 1, selected: null, busy: false, installPrompt: null };
+let toastTimer;
+const money = (value) => new Intl.NumberFormat("es-CO", { style: "currency", currency: "COP", maximumFractionDigits: 0 }).format(Number(value) || 0);
+const escapeHTML = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
+const activeRaffle = () => state.rifas.find((r) => r.id === state.activeId);
+const isAdmin = () => Boolean(state.token && Date.now() < state.expiresAt);
+const uuid = () => crypto.randomUUID();
 
-const MOBILE_BREAKPOINT = 768;
-const MOBILE_PAGE_SIZE = 40;
-
-let rifas = [];
-let rifaActivaId = null;
-let numeroActualIndex = null;
-let pagina = 1;
-let flushingQueue = false;
-let loaderCounter = 0;
-let syncInFlight = false;
-
-const syncState = {
-  url: "",
-  queue: [],
-  lastStatus: ""
-};
-let pinModalResolver = null;
-let pinModalCleanup = null;
-
-const els = {};
-
-function init() {
-  mapElements();
-  bindEvents();
-
-  rifas = readJSON(STORAGE_RIFAS, []);
-  syncState.url = DEFAULT_SYNC_URL;
-  syncState.queue = readJSON(STORAGE_QUEUE, []);
-  applyTheme(localStorage.getItem(STORAGE_THEME) || "light");
-
-  renderLista();
-  renderRifa();
-
-  window.addEventListener("online", () => {
-    setSyncStatus("Conexion restablecida, sincronizando...");
-    sincronizarTodo();
-  });
-
-  window.addEventListener("resize", () => {
-    if (window.innerWidth > MOBILE_BREAKPOINT) {
-      closeSidebar();
-    }
-    if (rifaActivaId) {
-      renderRifa();
-    }
-  });
-
-  if (syncState.url) {
-    sincronizarTodo(true);
-    window.setInterval(() => {
-      sincronizarTodo(false);
-    }, LIVE_SYNC_INTERVAL_MS);
-  }
+function normalizeRaffle(raw) {
+  return { id: String(raw.id || raw.rifaId), titulo: String(raw.titulo || "Rifa"),
+    precio: Number(raw.precio) || 0, cantidad: Math.min(100000, Math.max(2, Number(raw.cantidad) || 100)),
+    premio: String(raw.premio || ""), loteria: String(raw.loteria || ""), fecha: String(raw.fecha || ""),
+    hora: String(raw.hora || ""), responsable: String(raw.responsable || ""), condiciones: String(raw.condiciones || "") };
 }
-
-function mapElements() {
-  const ids = [
-    "menuBtn", "sidebar", "sidebarBackdrop", "btnCerrarSidebar", "listaRifas", "titulo", "precio", "cantidad", "premio", "loteria", "fecha", "hora", "responsable",
-    "btnCrearRifa", "themeToggle", "themeIcon", "themeLabel", "infoRifa", "kpiLibres", "kpiApartados",
-    "kpiPagados", "kpiRecaudado", "barra", "porcentajeTexto", "dashboard", "paginacion", "modal", "clienteNombre",
-    "clienteTelefono", "estadoSelect", "btnGuardarNumero", "btnLiberarNumero", "btnCerrarModal",
-    "pinModal", "pinTitle", "pinHelp", "pinInput", "btnPinConfirmar", "btnPinCancelar", "pinBtnSpinner", "pinBtnText",
-    "appLoader", "appLoaderText"
-  ];
-
-  ids.forEach((id) => {
-    els[id] = document.getElementById(id);
-  });
+function formatDate(raw, short = false) {
+  const match = String(raw).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  const date = match ? new Date(+match[1], +match[2] - 1, +match[3]) : new Date(raw);
+  if (Number.isNaN(date.getTime())) return raw || "Por confirmar";
+  return new Intl.DateTimeFormat("es-CO", { day: "numeric", month: short ? "short" : "long", ...(short ? {} : {year:"numeric"}) }).format(date);
 }
-
-function bindEvents() {
-  els.menuBtn.addEventListener("click", toggleMenu);
-  els.btnCerrarSidebar.addEventListener("click", closeSidebar);
-  els.sidebarBackdrop.addEventListener("click", closeSidebar);
-  els.btnCrearRifa.addEventListener("click", crearRifa);
-  els.themeToggle.addEventListener("click", toggleTheme);
-  els.btnGuardarNumero.addEventListener("click", guardarCliente);
-  els.btnLiberarNumero.addEventListener("click", liberarNumero);
-  els.btnCerrarModal.addEventListener("click", cerrarModal);
-  els.precio.addEventListener("input", () => {
-    els.precio.value = formatMoneyInput(els.precio.value);
-  });
-  els.precio.addEventListener("blur", () => {
-    els.precio.value = formatMoneyInput(els.precio.value);
-  });
-
-  els.modal.addEventListener("click", (event) => {
-    if (event.target === els.modal) {
-      cerrarModal();
-    }
-  });
-
-  els.pinModal.addEventListener("click", (event) => {
-    if (event.target === els.pinModal) {
-      closePinModal(null, true);
-    }
-  });
+function formatTime(raw) {
+  const match = String(raw).match(/^(\d{1,2}):(\d{2})/);
+  if (!match) return raw || "Por confirmar";
+  const h = Number(match[1]);
+  return `${h % 12 || 12}:${match[2]} ${h >= 12 ? "p. m." : "a. m."}`;
 }
-
-function readJSON(key, fallback) {
-  try {
-    return JSON.parse(localStorage.getItem(key)) || fallback;
-  } catch (error) {
-    return fallback;
-  }
+function status(message, kind = "online") {
+  $("connectionText").textContent = message;
+  $("connection").dataset.state = kind;
+  document.querySelector(".live-label").lastChild.textContent = kind === "online" ? " Disponibilidad en línea" : " Disponibilidad sin confirmar";
+  document.querySelector(".live-label").title = message;
 }
-
-function writeRifas() {
-  localStorage.setItem(STORAGE_RIFAS, JSON.stringify(rifas));
+function toast(message) {
+  clearTimeout(toastTimer); $("toast").textContent = message; $("toast").hidden = false;
+  toastTimer = setTimeout(() => { $("toast").hidden = true; }, 4500);
 }
-
-function writeQueue() {
-  localStorage.setItem(STORAGE_QUEUE, JSON.stringify(syncState.queue));
+function notice(title, message, success = false) {
+  $("noticeTitle").textContent = title; $("noticeMessage").textContent = message;
+  $("noticeSymbol").textContent = success ? "✓" : "✧";
+  if (!$("noticeDialog").open) $("noticeDialog").showModal();
 }
-
-function showAppLoader(message = "Cargando datos...") {
-  loaderCounter += 1;
-  els.appLoaderText.textContent = message;
-  els.appLoader.classList.add("show");
-  els.appLoader.setAttribute("aria-hidden", "false");
+function setTheme(dark) {
+  document.body.classList.toggle("dark-mode", dark);
+  $("themeToggle").setAttribute("aria-label", dark ? "Activar modo claro" : "Activar modo oscuro");
+  try { localStorage.setItem("rifapro.theme", dark ? "dark" : "light"); } catch { /* Private browsing. */ }
 }
-
-function hideAppLoader() {
-  loaderCounter = Math.max(0, loaderCounter - 1);
-  if (loaderCounter > 0) return;
-  els.appLoader.classList.remove("show");
-  els.appLoader.setAttribute("aria-hidden", "true");
+function savePublicCache() {
+  // Never persist names, phones, payment methods, summaries or admin tokens.
+  try { localStorage.setItem(CACHE_KEY, JSON.stringify({ rifas: state.rifas })); } catch { /* Storage may be full. */ }
 }
-
-function normalizeText(value) {
-  return (value || "").toString().trim();
-}
-
-function normalizeNumeroId(value) {
-  const raw = normalizeText(value);
-  if (!raw) return "";
-  if (/^\d+$/.test(raw)) return String(Number(raw));
-  return raw;
-}
-
-function escapeHtml(value) {
-  return (value || "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
-}
-
-function formatoCOP(valor) {
-  return new Intl.NumberFormat("es-CO", {
-    style: "currency",
-    currency: "COP",
-    maximumFractionDigits: 0
-  }).format(valor || 0);
-}
-
-function toggleMenu() {
-  if (els.sidebar.classList.contains("open")) {
-    closeSidebar();
-    return;
-  }
-  openSidebar();
-}
-
-function openSidebar() {
-  els.sidebar.classList.add("open");
-  els.sidebarBackdrop.classList.add("show");
-  els.sidebarBackdrop.setAttribute("aria-hidden", "false");
-}
-
-function closeSidebar() {
-  els.sidebar.classList.remove("open");
-  els.sidebarBackdrop.classList.remove("show");
-  els.sidebarBackdrop.setAttribute("aria-hidden", "true");
-}
-
-function parseMoneyValue(raw) {
-  const digits = String(raw || "").replace(/\D/g, "");
-  return Number(digits || 0);
-}
-
-function formatMoneyInput(raw) {
-  const value = parseMoneyValue(raw);
-  if (!value) return "";
-  return `$${value.toLocaleString("es-CO")}`;
-}
-
-function formatFechaBonita(rawDate) {
-  const safe = normalizeText(rawDate);
-  if (!safe) return "";
-
-  let date;
-  const ymd = safe.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (ymd) {
-    // Parse YYYY-MM-DD in local time to avoid timezone shifts.
-    date = new Date(Number(ymd[1]), Number(ymd[2]) - 1, Number(ymd[3]));
-  } else {
-    // Accept ISO and other valid date strings coming from Sheets.
-    date = new Date(safe);
-  }
-
-  if (Number.isNaN(date.getTime())) return safe;
-
-  const formatted = new Intl.DateTimeFormat("es-CO", {
-    weekday: "long",
-    day: "2-digit",
-    month: "long",
-    year: "numeric"
-  }).format(date);
-
-  return formatted.charAt(0).toUpperCase() + formatted.slice(1);
-}
-
-function formatHoraBonita(rawTime) {
-  const safe = normalizeText(rawTime);
-  if (!safe) return "";
-
-  let date;
-  const hhmm = safe.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
-  if (hhmm) {
-    const hours = Number(hhmm[1]);
-    const minutes = Number(hhmm[2]);
-    if (!Number.isInteger(hours) || !Number.isInteger(minutes)) return safe;
-    date = new Date();
-    date.setHours(hours, minutes, 0, 0);
-  } else {
-    const parsed = new Date(safe);
-    if (Number.isNaN(parsed.getTime())) return safe;
-    date = parsed;
-  }
-
-  return new Intl.DateTimeFormat("es-CO", {
-    hour: "numeric",
-    minute: "2-digit",
-    hour12: true
-  }).format(date);
-}
-
-function applyTheme(mode) {
-  const darkMode = mode === "dark";
-  document.body.classList.toggle("dark-mode", darkMode);
-  localStorage.setItem(STORAGE_THEME, darkMode ? "dark" : "light");
-  els.themeLabel.textContent = darkMode ? "Modo dia" : "Modo noche";
-  els.themeIcon.className = darkMode ? "fa-solid fa-sun" : "fa-solid fa-moon";
-}
-
-function toggleTheme() {
-  const next = document.body.classList.contains("dark-mode") ? "light" : "dark";
-  applyTheme(next);
-}
-
-function createNumeros(cantidad, rifaId, defaultUpdatedAt = "") {
-  const safeCantidad = Math.max(1, Number(cantidad) || 1);
-  const padding = Math.max(2, String(safeCantidad - 1).length);
-  const numbers = [];
-
-  for (let i = 0; i < safeCantidad; i += 1) {
-    const numeroId = String(i).padStart(padding, "0");
-    numbers.push({
-      id: `${rifaId}-${numeroId}`,
-      n: numeroId,
-      estado: "libre",
-      cliente: null,
-      updatedAt: defaultUpdatedAt
-    });
-  }
-
-  return numbers;
-}
-
-function crearRifaDesdeMeta(meta) {
-  const rifaId = String(meta.rifaId);
-  const cantidad = Math.max(1, Number(meta.cantidad) || 100);
-
-  return {
-    id: rifaId,
-    titulo: normalizeText(meta.titulo) || `Rifa ${rifaId}`,
-    precio: Number(meta.precio) || 0,
-    cantidad,
-    premio: normalizeText(meta.premio),
-    loteria: normalizeText(meta.loteria),
-    fecha: normalizeText(meta.fecha),
-    hora: normalizeText(meta.hora),
-    responsable: normalizeText(meta.responsable),
-    createdAt: new Date().toISOString(),
-    numeros: createNumeros(cantidad, rifaId, "")
-  };
-}
-
-async function crearRifa() {
-  const autorizado = await validarPinAdmin("Ingresa PIN de 4 digitos para crear una rifa.");
-  if (!autorizado) return;
-
-  const cantidad = Number(els.cantidad.value);
-  const precio = parseMoneyValue(els.precio.value);
-  const nueva = {
-    id: Date.now().toString(),
-    titulo: normalizeText(els.titulo.value),
-    precio,
-    cantidad,
-    premio: normalizeText(els.premio.value),
-    loteria: normalizeText(els.loteria.value),
-    fecha: normalizeText(els.fecha.value),
-    hora: normalizeText(els.hora.value),
-    responsable: normalizeText(els.responsable.value),
-    createdAt: new Date().toISOString(),
-    numeros: []
-  };
-
-  if (!nueva.titulo || !nueva.precio || !nueva.cantidad) {
-    alert("Completa titulo, precio y cantidad.");
-    return;
-  }
-
-  if (nueva.cantidad > 100000) {
-    alert("La cantidad maxima soportada es 100000.");
-    return;
-  }
-
-  nueva.numeros = createNumeros(nueva.cantidad, nueva.id, new Date().toISOString());
-
-  rifas.unshift(nueva);
-  rifaActivaId = nueva.id;
-  pagina = 1;
-
-  writeRifas();
-  renderLista();
-  renderRifa();
-  limpiarFormularioRifa();
-
-  enqueueOperation({
-    type: "upsertRifaMeta",
-    payload: buildRifaMetaPayload(nueva)
-  });
-  flushQueue();
-}
-
-function limpiarFormularioRifa() {
-  ["titulo", "precio", "cantidad", "premio", "loteria", "fecha", "hora", "responsable"].forEach((id) => {
-    els[id].value = "";
-  });
-}
-
-function getRifaActiva() {
-  return rifas.find((rifa) => rifa.id === rifaActivaId) || null;
-}
-
-function renderLista() {
-  els.listaRifas.innerHTML = "";
-
-  rifas.forEach((rifa) => {
-    const item = document.createElement("button");
-    item.type = "button";
-    item.className = `rifa-item ${rifaActivaId === rifa.id ? "active" : ""}`;
-
-    const title = document.createElement("span");
-    title.className = "rifa-title";
-    title.textContent = rifa.titulo;
-
-    const delBtn = document.createElement("button");
-    delBtn.type = "button";
-    delBtn.className = "delete-btn";
-    delBtn.innerHTML = '<i class="fa-solid fa-trash"></i>';
-    delBtn.addEventListener("click", (event) => {
-      event.stopPropagation();
-      eliminarRifa(rifa.id);
-    });
-
-    item.addEventListener("click", () => abrirRifa(rifa.id));
-
-    item.appendChild(title);
-    item.appendChild(delBtn);
-    els.listaRifas.appendChild(item);
-  });
-}
-
-async function eliminarRifa(id) {
-  const autorizado = await validarPinAdmin("Ingresa PIN de 4 digitos para eliminar esta rifa.");
-  if (!autorizado) return;
-
-  rifas = rifas.filter((rifa) => rifa.id !== id);
-  if (rifaActivaId === id) {
-    rifaActivaId = null;
-  }
-
-  writeRifas();
-  renderLista();
-  renderRifa();
-
-  enqueueOperation({
-    type: "deleteRifa",
-    payload: { rifaId: id }
-  });
-  flushQueue();
-}
-
-async function abrirRifa(id) {
-  rifaActivaId = id;
-  pagina = 1;
-  renderLista();
-  renderRifa();
-
-  const rifa = getRifaActiva();
-  if (rifa) {
-    showAppLoader("Cargando casillas ocupadas...");
-    try {
-      await cargarRifaDesdeSheets(rifa);
-    } finally {
-      hideAppLoader();
-    }
-  }
-
-  if (window.innerWidth <= MOBILE_BREAKPOINT) {
-    closeSidebar();
-  }
-}
-
-function renderRifa() {
-  const rifa = getRifaActiva();
-
-  if (!rifa) {
-    els.infoRifa.innerHTML = "<h2>Selecciona o crea una rifa</h2>";
-    els.dashboard.innerHTML = "";
-    els.paginacion.innerHTML = "";
-    ["kpiLibres", "kpiApartados", "kpiPagados", "kpiRecaudado"].forEach((id) => {
-      els[id].textContent = "";
-    });
-    els.barra.style.width = "0%";
-    els.porcentajeTexto.textContent = "";
-    return;
-  }
-
-  els.infoRifa.innerHTML = `
-    <h2>${escapeHtml(rifa.titulo)}</h2>
-    <p><strong>Premio:</strong> ${escapeHtml(rifa.premio || "-")}</p>
-    <p><strong>Loteria:</strong> ${escapeHtml(rifa.loteria || "-")}</p>
-    <p><strong>Fecha:</strong> ${escapeHtml(formatFechaBonita(rifa.fecha) || "-")} ${escapeHtml(formatHoraBonita(rifa.hora) || "")}</p>
-    <p><strong>Responsable:</strong> ${escapeHtml(rifa.responsable || "-")}</p>
-  `;
-
-  renderDashboard(rifa);
-  actualizarKPIs(rifa);
-}
-
-function renderDashboard(rifa) {
-  const isMobile = window.innerWidth <= MOBILE_BREAKPOINT;
-  const total = rifa.numeros.length;
-
-  let start = 0;
-  let end = total;
-
-  if (isMobile) {
-    start = (pagina - 1) * MOBILE_PAGE_SIZE;
-    end = Math.min(start + MOBILE_PAGE_SIZE, total);
-    renderPaginacion(total);
-  } else {
-    els.paginacion.innerHTML = "";
-  }
-
-  els.dashboard.innerHTML = "";
-
-  for (let index = start; index < end; index += 1) {
-    const numero = rifa.numeros[index];
-    const tile = document.createElement("div");
-    tile.className = `numero ${numero.estado}`;
-
-    const nombre = numero.cliente?.nombre || "";
-    const nombreCorto = nombre.length > 10 ? `${nombre.slice(0, 10)}...` : nombre;
-
-    tile.innerHTML = `
-      <span class="num">${escapeHtml(numero.n)}</span>
-      ${nombre ? `<span class="cliente">${escapeHtml(nombreCorto)}</span>` : ""}
-    `;
-
-    tile.title = nombre;
-    tile.addEventListener("click", () => abrirModal(index));
-    els.dashboard.appendChild(tile);
-  }
-}
-
-function renderPaginacion(totalNumeros) {
-  const totalPaginas = Math.ceil(totalNumeros / MOBILE_PAGE_SIZE);
-
-  els.paginacion.innerHTML = "";
-
-  if (totalPaginas <= 1) {
-    return;
-  }
-
-  const prevBtn = document.createElement("button");
-  prevBtn.type = "button";
-  prevBtn.className = "pager-arrow";
-  prevBtn.innerHTML = "&#8249;";
-  prevBtn.disabled = pagina <= 1;
-  prevBtn.addEventListener("click", () => {
-    if (pagina > 1) {
-      pagina -= 1;
-      renderRifa();
-    }
-  });
-
-  const dots = document.createElement("span");
-  dots.className = "pager-dots";
-  const activeDot = totalPaginas <= 1
-    ? 1
-    : Math.min(2, Math.max(0, Math.round(((pagina - 1) / (totalPaginas - 1)) * 2)));
-
-  for (let i = 0; i < 3; i += 1) {
-    const dot = document.createElement("span");
-    dot.className = `pager-dot ${i === activeDot ? "active" : ""}`;
-    dots.appendChild(dot);
-  }
-
-  const nextBtn = document.createElement("button");
-  nextBtn.type = "button";
-  nextBtn.className = "pager-arrow";
-  nextBtn.innerHTML = "&#8250;";
-  nextBtn.disabled = pagina >= totalPaginas;
-  nextBtn.addEventListener("click", () => {
-    if (pagina < totalPaginas) {
-      pagina += 1;
-      renderRifa();
-    }
-  });
-
-  els.paginacion.appendChild(prevBtn);
-  els.paginacion.appendChild(dots);
-  els.paginacion.appendChild(nextBtn);
-}
-
-function actualizarKPIs(rifa) {
-  const libres = rifa.numeros.filter((n) => n.estado === "libre").length;
-  const apartados = rifa.numeros.filter((n) => n.estado === "apartado").length;
-  const pagados = rifa.numeros.filter((n) => n.estado === "pagado").length;
-
-  const recaudado = pagados * rifa.precio;
-  const meta = rifa.cantidad * rifa.precio;
-  const avance = meta ? (recaudado / meta) * 100 : 0;
-  const porcentajeSeguro = Math.max(0, Math.min(100, avance));
-
-  els.kpiLibres.innerHTML = `<strong>Libres</strong>${libres}`;
-  els.kpiApartados.innerHTML = `<strong>Apartados</strong>${apartados}`;
-  els.kpiPagados.innerHTML = `<strong>Pagados</strong>${pagados}`;
-  els.kpiRecaudado.innerHTML = `<strong>Recaudado</strong>${formatoCOP(recaudado)}`;
-
-  els.barra.style.width = `${porcentajeSeguro.toFixed(1)}%`;
-  els.porcentajeTexto.textContent = `${porcentajeSeguro.toFixed(1)}% completado`;
-}
-
-async function abrirModal(index) {
-  const rifa = getRifaActiva();
-  if (!rifa) return;
-
-  numeroActualIndex = index;
-  const num = rifa.numeros[index];
-
-  if (num.estado !== "libre") {
-    const autorizado = await validarPinEdicion();
-    if (!autorizado) {
-      numeroActualIndex = null;
-      return;
-    }
-  }
-
-  els.clienteNombre.value = num.cliente?.nombre || "";
-  els.clienteTelefono.value = num.cliente?.telefono || "";
-  els.estadoSelect.value = num.estado;
-
-  els.modal.classList.add("show");
-  els.modal.setAttribute("aria-hidden", "false");
-}
-
-async function validarPinEdicion() {
-  if (!syncState.url || !navigator.onLine) {
-    alert("Se requiere conexion para validar PIN.");
-    return false;
-  }
-
-  const pinRaw = await openPinModal({
-    title: "Validacion de seguridad",
-    help: "Este numero ya esta apartado o pagado. Ingresa PIN de 4 digitos."
-  });
-  if (pinRaw === null) {
-    return false;
-  }
-
-  const pin = String(pinRaw).replace(/\D/g, "").slice(0, 4);
-  if (pin.length !== 4) {
-    closePinModal();
-    alert("PIN invalido. Debe tener 4 digitos.");
-    return false;
-  }
-
-  return verificarPinYFinalizar(pin);
-}
-
-async function validarPinAdmin(helpText) {
-  if (!syncState.url || !navigator.onLine) {
-    alert("Se requiere conexion para validar PIN.");
-    return false;
-  }
-
-  const pinRaw = await openPinModal({
-    title: "Validacion de seguridad",
-    help: helpText
-  });
-  if (pinRaw === null) {
-    return false;
-  }
-
-  const pin = String(pinRaw).replace(/\D/g, "").slice(0, 4);
-  if (pin.length !== 4) {
-    closePinModal();
-    alert("PIN invalido. Debe tener 4 digitos.");
-    return false;
-  }
-
-  return verificarPinYFinalizar(pin);
-}
-
-async function verificarPinYFinalizar(pin) {
-  try {
-    setPinLoading(true);
-    const response = await apiGet("verifyPin", { payload: JSON.stringify({ pin }) });
-    setPinLoading(false);
-    if (response && response.ok && response.valid === true) {
-      closePinModal();
-      return true;
-    }
-
-    closePinModal();
-    alert("PIN incorrecto.");
-    return false;
-  } catch (error) {
-    setPinLoading(false);
-    closePinModal();
-    alert("No fue posible validar el PIN.");
-    return false;
-  }
-}
-
-function openPinModal(options = {}) {
-  return new Promise((resolve) => {
-    pinModalResolver = resolve;
-    if (pinModalCleanup) {
-      pinModalCleanup();
-      pinModalCleanup = null;
-    }
-    els.pinInput.value = "";
-    setPinLoading(false);
-    els.pinTitle.textContent = options.title || "Validacion de seguridad";
-    els.pinHelp.textContent = options.help || "Ingresa PIN de 4 digitos.";
-    els.pinModal.classList.add("show");
-    els.pinModal.setAttribute("aria-hidden", "false");
-    els.pinInput.focus();
-
-    const onConfirm = () => {
-      const value = els.pinInput.value || "";
-      cleanup();
-      if (pinModalResolver) {
-        pinModalResolver(value);
-        pinModalResolver = null;
-      }
-    };
-
-    const onCancel = () => {
-      closePinModal(null, true);
-      cleanup();
-    };
-
-    const onEnter = (event) => {
-      if (event.key === "Enter") {
-        onConfirm();
-      }
-      if (event.key === "Escape") {
-        onCancel();
-      }
-    };
-
-    const cleanup = () => {
-      els.btnPinConfirmar.removeEventListener("click", onConfirm);
-      els.btnPinCancelar.removeEventListener("click", onCancel);
-      els.pinInput.removeEventListener("keydown", onEnter);
-      pinModalCleanup = null;
-    };
-    pinModalCleanup = cleanup;
-
-    els.btnPinConfirmar.addEventListener("click", onConfirm);
-    els.btnPinCancelar.addEventListener("click", onCancel);
-    els.pinInput.addEventListener("keydown", onEnter);
-  });
-}
-
-function closePinModal(result = null, shouldResolve = false) {
-  els.pinModal.classList.remove("show");
-  els.pinModal.setAttribute("aria-hidden", "true");
-  setPinLoading(false);
-
-  if (pinModalCleanup) {
-    pinModalCleanup();
-  }
-
-  if (shouldResolve && pinModalResolver) {
-    pinModalResolver(result);
-    pinModalResolver = null;
-  }
-}
-
-function setPinLoading(isLoading) {
-  els.btnPinConfirmar.disabled = isLoading;
-  els.btnPinCancelar.disabled = isLoading;
-  els.pinInput.disabled = isLoading;
-  els.pinBtnSpinner.classList.toggle("show", isLoading);
-  els.pinBtnText.textContent = isLoading ? "Validando..." : "Validar";
-}
-
-function cerrarModal() {
-  els.modal.classList.remove("show");
-  els.modal.setAttribute("aria-hidden", "true");
-  numeroActualIndex = null;
-}
-
-function guardarCliente() {
-  const rifa = getRifaActiva();
-  if (!rifa || numeroActualIndex === null) return;
-
-  const estado = els.estadoSelect.value;
-  const nombre = normalizeText(els.clienteNombre.value);
-  const telefono = normalizeText(els.clienteTelefono.value);
-
-  const num = rifa.numeros[numeroActualIndex];
-  num.estado = estado;
-  num.updatedAt = new Date().toISOString();
-  num.cliente = estado === "libre" ? null : { nombre, telefono };
-
-  persistirRifaActiva();
-  cerrarModal();
-
-  upsertNumeroRemoto(rifa, num);
-}
-
-function liberarNumero() {
-  const rifa = getRifaActiva();
-  if (!rifa || numeroActualIndex === null) return;
-
-  const num = rifa.numeros[numeroActualIndex];
-  num.estado = "libre";
-  num.cliente = null;
-  num.updatedAt = new Date().toISOString();
-
-  persistirRifaActiva();
-  cerrarModal();
-
-  upsertNumeroRemoto(rifa, num);
-}
-
-function persistirRifaActiva() {
-  const rifa = getRifaActiva();
-  if (!rifa) return;
-
-  rifas = rifas.map((item) => (item.id === rifa.id ? rifa : item));
-  writeRifas();
-  renderRifa();
-  renderLista();
-}
-
-function setSyncStatus(message) {
-  syncState.lastStatus = message;
-  console.log("[RifaPro Sync]", message);
-}
-
-function buildRifaMetaPayload(rifa) {
-  return {
-    rifaId: rifa.id,
-    titulo: rifa.titulo,
-    precio: rifa.precio,
-    premio: rifa.premio,
-    loteria: rifa.loteria,
-    fecha: rifa.fecha,
-    hora: rifa.hora,
-    responsable: rifa.responsable,
-    cantidad: rifa.cantidad,
-    updatedAt: new Date().toISOString()
-  };
-}
-
-function buildNumeroPayload(rifa, numero) {
-  return {
-    rifaId: rifa.id,
-    numeroId: numero.n,
-    estado: numero.estado,
-    clienteNombre: numero.cliente?.nombre || "",
-    clienteTelefono: numero.cliente?.telefono || "",
-    updatedAt: numero.updatedAt || new Date().toISOString(),
-    titulo: rifa.titulo,
-    precio: rifa.precio,
-    premio: rifa.premio,
-    loteria: rifa.loteria,
-    fecha: rifa.fecha,
-    hora: rifa.hora,
-    responsable: rifa.responsable,
-    cantidad: rifa.cantidad
-  };
-}
-
-function enqueueOperation(op) {
-  const opWithMeta = {
-    ...op,
-    attempts: 0,
-    lastError: "",
-    queuedAt: new Date().toISOString()
-  };
-
-  if (op.type === "upsertNumber") {
-    const key = `${op.payload.rifaId}-${op.payload.numeroId}`;
-    syncState.queue = syncState.queue.filter((item) => {
-      if (item.type !== "upsertNumber") return true;
-      const existingKey = `${item.payload.rifaId}-${item.payload.numeroId}`;
-      return existingKey !== key;
-    });
-  }
-
-  syncState.queue.push(opWithMeta);
-  writeQueue();
-}
-
-async function flushQueue() {
-  if (!syncState.url || flushingQueue || !navigator.onLine) {
-    return;
-  }
-
-  flushingQueue = true;
-
-  try {
-    const pending = [...syncState.queue];
-    syncState.queue = [];
-
-    for (const op of pending) {
-      try {
-        if (op.type === "upsertNumber") {
-          await apiPost("upsertNumber", op.payload);
-        }
-
-        if (op.type === "upsertRifaMeta") {
-          await apiPost("upsertRifaMeta", op.payload);
-        }
-
-        if (op.type === "deleteRifa") {
-          await apiPost("deleteRifa", op.payload);
-        }
-      } catch (error) {
-        op.attempts = Number(op.attempts || 0) + 1;
-        op.lastError = String(error.message || error);
-        syncState.queue.push(op);
-      }
-    }
-
-    writeQueue();
-    if (syncState.queue.length) {
-      setSyncStatus(`Sync parcial. Pendientes: ${syncState.queue.length}`);
-    } else {
-      setSyncStatus("Sync al dia");
-    }
-  } finally {
-    flushingQueue = false;
-  }
-}
-
-async function upsertNumeroRemoto(rifa, numero) {
-  const payload = buildNumeroPayload(rifa, numero);
-
-  if (!syncState.url || !navigator.onLine) {
-    enqueueOperation({ type: "upsertNumber", payload });
-    setSyncStatus("Cambio en cola local. Sincroniza al reconectar.");
-    return;
-  }
-
-  try {
-    await apiPost("upsertNumber", payload);
-    setSyncStatus(`Numero ${numero.n} sincronizado`);
-    flushQueue();
-  } catch (error) {
-    enqueueOperation({ type: "upsertNumber", payload });
-    setSyncStatus("Error en sync, cambio guardado en cola local.");
-  }
-}
-
-async function cargarRifasDesdeSheets() {
-  if (!syncState.url || !navigator.onLine) {
-    return;
-  }
-
-  const response = await apiGet("getRifas");
-  if (!response.ok || !Array.isArray(response.data)) {
-    return;
-  }
-
-  let changed = false;
-  const localMap = new Map(rifas.map((item) => [item.id, item]));
-
-  response.data.forEach((meta) => {
-    const id = String(meta.rifaId || "");
-    if (!id) return;
-
-    const local = localMap.get(id);
-    if (!local) {
-      const nueva = crearRifaDesdeMeta(meta);
-      rifas.unshift(nueva);
-      localMap.set(id, nueva);
-      changed = true;
-      return;
-    }
-
-    const remoteCantidad = Math.max(1, Number(meta.cantidad) || local.cantidad || 1);
-    if (Number(local.cantidad) !== remoteCantidad) {
-      local.cantidad = remoteCantidad;
-      if (!Array.isArray(local.numeros) || local.numeros.length !== remoteCantidad) {
-        local.numeros = createNumeros(remoteCantidad, local.id);
-      }
-      changed = true;
-    }
-
-    ["titulo", "premio", "loteria", "fecha", "hora", "responsable"].forEach((field) => {
-      const remoteValue = normalizeText(meta[field]);
-      if (remoteValue && local[field] !== remoteValue) {
-        local[field] = remoteValue;
-        changed = true;
-      }
-    });
-
-    const remotePrecio = Number(meta.precio);
-    if (Number.isFinite(remotePrecio) && remotePrecio >= 0 && local.precio !== remotePrecio) {
-      local.precio = remotePrecio;
-      changed = true;
-    }
-  });
-
-  if (changed) {
-    writeRifas();
-    renderLista();
-
-    if (!rifaActivaId && rifas.length) {
-      rifaActivaId = rifas[0].id;
-      pagina = 1;
-    }
-
-    renderRifa();
-  }
-}
-
-async function cargarRifaDesdeSheets(rifa) {
-  if (!syncState.url || !navigator.onLine) {
-    return;
-  }
-
-  try {
-    const response = await apiGet("getRifaNumbers", { rifaId: rifa.id });
-    if (!response.ok || !Array.isArray(response.data)) {
-      return;
-    }
-
-    const mapaLocal = new Map(rifa.numeros.map((n) => [normalizeNumeroId(n.n), n]));
-    let cambios = 0;
-
-    response.data.forEach((record) => {
-      const numeroId = normalizeNumeroId(record.numeroId);
-      if (!numeroId) return;
-
-      const local = mapaLocal.get(numeroId);
-      if (!local) return;
-
-      const remoteDate = record.updatedAt ? new Date(record.updatedAt).getTime() : 0;
-      const localDate = local.updatedAt ? new Date(local.updatedAt).getTime() : 0;
-      const localEsInicial = local.estado === "libre" && !local.cliente;
-
-      if (localEsInicial || remoteDate >= localDate) {
-        local.estado = record.estado || "libre";
-        local.updatedAt = record.updatedAt || new Date().toISOString();
-        local.cliente = local.estado === "libre"
-          ? null
-          : {
-            nombre: record.clienteNombre || "",
-            telefono: record.clienteTelefono || ""
-          };
-        cambios += 1;
-      }
-    });
-
-    if (cambios > 0) {
-      persistirRifaActiva();
-      setSyncStatus(`Rifa actualizada desde Sheets (${cambios} cambios)`);
-    }
-  } catch (error) {
-    setSyncStatus("No se pudo leer Google Sheets.");
-  }
-}
-
-async function sincronizarTodo(showLoader = false) {
-  if (!syncState.url) {
-    setSyncStatus("Configura primero la URL de Apps Script.");
-    return;
-  }
-  if (syncInFlight) {
-    return;
-  }
-  syncInFlight = true;
-
-  if (showLoader) {
-    showAppLoader("Cargando casillas ocupadas...");
-  }
-
-  setSyncStatus("Sincronizando...");
-
-  try {
-    await cargarRifasDesdeSheets();
-
-    if (!rifaActivaId && rifas.length) {
-      rifaActivaId = rifas[0].id;
-      pagina = 1;
-    }
-
-    const rifa = getRifaActiva();
-    if (rifa) {
-      await cargarRifaDesdeSheets(rifa);
-    }
-
-    renderLista();
-    renderRifa();
-
-    await flushQueue();
-    if (!syncState.queue.length) {
-      setSyncStatus("Sync al dia");
-    }
-  } catch (error) {
-    setSyncStatus("Error de conexion con Apps Script.");
-  } finally {
-    syncInFlight = false;
-    if (showLoader) {
-      hideAppLoader();
-    }
-  }
-}
-
-async function apiGet(action, params = {}) {
-  return jsonpRequest(action, params);
-}
-
-async function apiPost(action, payload = {}) {
-  const packedPayload = JSON.stringify(payload);
-
-  try {
-    const result = await jsonpRequest(action, { payload: packedPayload });
-    if (result && result.ok === false) {
-      throw new Error(result.error || "jsonp action rejected");
-    }
-    return result || { ok: true, transport: "jsonp" };
-  } catch (error) {
-    return postFallbackNoCors(action, packedPayload);
-  }
-}
-
-async function postFallbackNoCors(action, packedPayload) {
-  const form = new URLSearchParams();
-  form.set("action", action);
-  form.set("payload", packedPayload);
-
-  await fetch(syncState.url, {
-    method: "POST",
-    mode: "no-cors",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"
-    },
-    body: form.toString()
-  });
-
-  return { ok: true, transport: "post-no-cors" };
-}
-
-function jsonpRequest(action, params = {}) {
+function jsonp(action, params = {}) {
   return new Promise((resolve, reject) => {
-    if (!syncState.url) {
-      reject(new Error("sync URL vacia"));
-      return;
-    }
-
-    const callbackId = `rifaJsonp_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
-    const url = new URL(syncState.url);
-    url.searchParams.set("action", action);
-    url.searchParams.set("callback", callbackId);
-
-    Object.entries(params).forEach(([key, value]) => {
-      if (value !== undefined && value !== null) {
-        url.searchParams.set(key, String(value));
-      }
-    });
-
+    const callback = `rifa_${uuid().replaceAll("-", "")}`;
+    const url = new URL(CONFIG.apiUrl);
+    url.searchParams.set("action", action); url.searchParams.set("callback", callback);
+    url.searchParams.set("t", Date.now());
+    for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
     const script = document.createElement("script");
-    script.src = url.toString();
-    script.async = true;
-
-    const cleanup = () => {
-      if (window[callbackId]) {
-        delete window[callbackId];
-      }
-      if (script.parentNode) {
-        script.parentNode.removeChild(script);
-      }
-    };
-
-    const timer = setTimeout(() => {
-      cleanup();
-      reject(new Error("timeout jsonp"));
-    }, 12000);
-
-    window[callbackId] = (data) => {
-      clearTimeout(timer);
-      cleanup();
-      resolve(data);
-    };
-
-    script.onerror = () => {
-      clearTimeout(timer);
-      cleanup();
-      reject(new Error("jsonp network error"));
-    };
-
-    document.body.appendChild(script);
+    let timer;
+    const cleanup = () => { clearTimeout(timer); delete window[callback]; script.remove(); };
+    window[callback] = (data) => { cleanup(); resolve(data); };
+    script.onerror = () => { cleanup(); reject(new Error("No pudimos conectar con el servidor.")); };
+    timer = setTimeout(() => { cleanup(); reject(new Error("El servidor tardó demasiado. Intenta de nuevo.")); }, 16000);
+    script.src = url.href; document.body.appendChild(script);
   });
 }
+async function api(action, payload = {}, privateRequest = false) {
+  if (!navigator.onLine) throw new Error("Necesitas conexión para confirmar esta operación.");
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 25000);
+  try {
+    const response = await fetch(CONFIG.apiUrl, { method: "POST", redirect: "follow", cache: "no-store",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({ action, payload, ...(privateRequest ? { token: state.token } : {}) }), signal: controller.signal });
+    if (!response.ok) throw new Error("El servidor no está disponible. Intenta de nuevo.");
+    const result = await response.json();
+    if (result.code === "UNAUTHORIZED") {
+      logout(false); throw new Error("Tu sesión terminó. Ingresa de nuevo como administrador.");
+    }
+    if (!result.ok && result.code !== "CONFLICT") throw new Error(result.error || "No se pudo confirmar la operación.");
+    return result;
+  } catch (error) {
+    if (error.name === "AbortError" || error instanceof TypeError) throw new Error("No llegó la confirmación. Comprueba tu conexión y reintenta; conservamos tu solicitud para evitar duplicados.");
+    throw error;
+  } finally { clearTimeout(timer); }
+}
 
+async function refresh() {
+  if (state.refreshing || document.hidden) return;
+  if (!navigator.onLine) { state.online = false; status("Sin conexión · solo consulta", "offline"); return; }
+  state.refreshing = true;
+  const generation = state.generation;
+  try {
+    const result = await jsonp("getRifas");
+    if (!result.ok || !Array.isArray(result.data)) throw new Error("No pudimos consultar las rifas.");
+    if (generation !== state.generation) return;
+    state.protocol = result.protocol === 2;
+    state.rifas = result.data.map(normalizeRaffle);
+    if (!state.rifas.some((r) => r.id === state.activeId)) {
+      const requested = new URL(location.href).searchParams.get("rifa");
+      state.activeId = state.rifas.find((r) => r.id === requested)?.id || state.rifas[0]?.id || null;
+      state.records = []; state.summary = null; state.page = 1;
+    }
+    const rifa = activeRaffle();
+    if (rifa) {
+      const snapshot = isAdmin() && state.protocol
+        ? await api("adminSnapshot", { rifaId: rifa.id }, true)
+        : await jsonp("getRifaNumbers", { rifaId: rifa.id });
+      if (generation !== state.generation) return;
+      if (!snapshot.ok || !Array.isArray(snapshot.data)) throw new Error("No pudimos actualizar la disponibilidad.");
+      state.records = snapshot.data.map((n) => ({ numeroId: String(n.numeroId).padStart(Math.max(2, String(rifa.cantidad - 1).length), "0"),
+        estado: isAdmin() ? n.estado : n.estado === "libre" ? "libre" : "apartado",
+        clienteNombre: String(n.clienteNombre || ""), updatedAt: n.updatedAt,
+        ...(isAdmin() ? { clienteTelefono: n.clienteTelefono, paymentMethod: n.paymentMethod, revision: n.revision } : {}) }));
+      state.summary = isAdmin() ? snapshot.summary : null;
+    }
+    state.online = true;
+    status(state.protocol ? "Actualizado en línea" : "Servidor pendiente de actualizar", state.protocol ? "online" : "error");
+    savePublicCache(); render();
+  } catch (error) {
+    if (generation === state.generation) { state.online = false; status("No se pudo actualizar", "error"); }
+  } finally {
+    state.refreshing = false;
+    // If a switch or logout occurred during the request, load the new view.
+    if (generation !== state.generation) queueMicrotask(refresh);
+  }
+}
+function render() { renderList(); renderTicket(); renderNumbers(); renderAdmin(); }
+function renderList() {
+  $("raffleCount").textContent = state.rifas.length;
+  $("listaRifas").innerHTML = state.rifas.length ? state.rifas.map((r) => `<div class="raffle-item ${r.id === state.activeId ? "active" : ""}"><button class="raffle-select" type="button" data-raffle="${escapeHTML(r.id)}" aria-pressed="${r.id === state.activeId}"><span class="raffle-symbol" aria-hidden="true">✧</span><span><strong>${escapeHTML(r.titulo)}</strong><small>${escapeHTML(formatDate(r.fecha, true))} · ${r.cantidad} números</small></span><span class="arrow" aria-hidden="true">↗</span></button>${isAdmin() ? `<button class="delete-button" type="button" data-delete="${escapeHTML(r.id)}" aria-label="Eliminar ${escapeHTML(r.titulo)}">×</button>` : ""}</div>`).join("") : '<p class="muted">Aún no hay rifas publicadas.</p>';
+}
+function renderTicket() {
+  const r = activeRaffle();
+  if (!r) {
+    $("infoRifa").innerHTML = '<div class="empty-state"><span class="note-mark" aria-hidden="true">✧</span><h2>La próxima ilusión está por llegar.</h2><p>Las rifas publicadas aparecerán aquí. El administrador puede crear una nueva desde su espacio.</p></div>';
+    return;
+  }
+  const prize = r.premio || r.titulo;
+  const digits = Math.max(2, String(r.cantidad - 1).length);
+  $("infoRifa").innerHTML = `<div class="ticket-main"><div><p class="eyebrow">${escapeHTML(r.titulo.toUpperCase())}</p><h2 class="ticket-title">RIFA DE</h2><p class="ticket-prize">${escapeHTML(prize)}</p><p class="ticket-subtitle">${r.cantidad === 100 ? 'Juega con las dos (2) últimas cifras' : `Participa con uno de los ${r.cantidad} números`} de la lotería.</p></div><div class="ticket-seal" aria-hidden="true"><span>ELIGE TU</span><strong>${digits}</strong><small>${r.cantidad === 100 ? 'ÚLTIMAS CIFRAS' : 'CIFRAS'}</small></div></div><div class="ticket-divider"></div><div class="ticket-details"><div><span class="detail-label">LOTERÍA</span><span class="detail-value">${escapeHTML(r.loteria || "Por confirmar")}</span></div><div><span class="detail-label">FECHA DEL SORTEO</span><span class="detail-value">${escapeHTML(formatDate(r.fecha))}</span></div><div><span class="detail-label">RESPONSABLE</span><span class="detail-value">${escapeHTML(r.responsable || "Por confirmar")}</span></div></div><div class="ticket-bottom"><div><p><strong>Hora límite de pago: ${escapeHTML(formatTime(r.hora))}.</strong><br>${escapeHTML(r.condiciones || "Quien no haya pagado su número a la hora límite del día del sorteo perderá el derecho al premio.")}</p></div><div class="ticket-price"><small>VALOR POR NÚMERO</small><strong>${money(r.precio)}</strong></div></div>`;
+}
+function numberRecord(n) { return state.records.find((record) => Number(record.numeroId) === Number(n)); }
+function renderNumbers() {
+  const r = activeRaffle();
+  $("paginacion").replaceChildren();
+  if (!r) { $("dashboard").innerHTML = '<p class="empty-state muted">Selecciona una rifa para ver sus números.</p>'; return; }
+  const query = $("numberSearch").value.trim();
+  const digits = Math.max(2, String(r.cantidad - 1).length);
+  const all = Array.from({ length: r.cantidad }, (_, i) => String(i).padStart(digits, "0")).filter((n) => !query || n.includes(query));
+  const pageSize = Math.max(20, Math.min(200, CONFIG.pageSize || 100));
+  const pages = Math.ceil(all.length / pageSize);
+  state.page = Math.min(Math.max(state.page, 1), Math.max(pages, 1));
+  const records = new Map(state.records.map((n) => [Number(n.numeroId), n]));
+  $("dashboard").innerHTML = all.slice((state.page - 1) * pageSize, state.page * pageSize).map((n) => {
+    const record = records.get(Number(n));
+    const occupied = record && record.estado !== "libre";
+    const paid = isAdmin() && record?.estado === "pagado";
+    const payment = paid && record.paymentMethod;
+    const label = occupied ? record.clienteNombre || (paid ? "Pagado" : "Reservado") : state.online && state.protocol ? "Elegir" : "Sin verificar";
+    return `<button class="numero ${paid ? "pagado" : occupied ? "apartado" : "libre"}" type="button" data-number="${n}" aria-label="Número ${n}, ${occupied ? `reservado por ${escapeHTML(record.clienteNombre || "un participante")}` : "libre"}"><span class="num">${n}</span><span class="number-state">${escapeHTML(label)}</span>${payment ? `<span class="tile-payment ${payment === "efectivo" ? "cash" : "transfer"}" title="${payment === "efectivo" ? "Efectivo" : "Nequi / transferencia"}" aria-label="${payment === "efectivo" ? "Efectivo" : "Nequi / transferencia"}">${payment === "efectivo" ? "▤" : "↗"}</span>` : ""}</button>`;
+  }).join("") || '<p class="empty-state muted">No encontramos ese número en esta rifa.</p>';
+  if (pages > 1) $("paginacion").innerHTML = `<button type="button" data-page="${state.page - 1}" ${state.page === 1 ? "disabled" : ""} aria-label="Página anterior">‹</button><span>${state.page} de ${pages}</span><button type="button" data-page="${state.page + 1}" ${state.page === pages ? "disabled" : ""} aria-label="Página siguiente">›</button>`;
+}
+function renderAdmin() {
+  const admin = isAdmin();
+  document.querySelectorAll(".admin-only").forEach((el) => { el.hidden = !admin; });
+  $("paidLegend").hidden = !admin;
+  $("adminButtonText").textContent = admin ? "Cerrar sesión" : "Administrador";
+  const summary = admin ? state.summary : null;
+  $("adminSummary").hidden = !summary;
+  for (const [id, label, value] of [["kpiLibres", "Libres", summary?.libres], ["kpiApartados", "Apartados", summary?.apartados], ["kpiPagados", "Pagados", summary?.pagados], ["kpiRecaudado", "Recaudado", summary ? money(summary.recaudado) : ""]]) {
+    $(id).innerHTML = summary ? `<strong>${label}</strong>${escapeHTML(value)}` : "";
+  }
+  $("totalTransfer").textContent = summary ? money(summary.transferencia) : "";
+  $("totalCash").textContent = summary ? money(summary.efectivo) : "";
+  $("unclassifiedPayments").hidden = !summary?.sinClasificar;
+  $("unclassifiedPayments").textContent = summary?.sinClasificar ? `${money(summary.sinClasificar)} en pagos anteriores sin medio registrado.` : "";
+  const percent = summary?.meta ? Math.min(100, summary.recaudado / summary.meta * 100) : 0;
+  $("barra").style.width = `${percent}%`;
+  document.querySelector(".progress").setAttribute("aria-valuenow", String(Math.round(percent)));
+  $("porcentajeTexto").textContent = summary ? `${percent.toFixed(1)}% de ${money(summary.meta)} recaudado` : "";
+}
+function switchRaffle(id) {
+  if (id === state.activeId) return;
+  state.generation++; state.activeId = id; state.page = 1; state.records = []; state.summary = null; state.online = false;
+  $("numberSearch").value = "";
+  const url = new URL(location.href); url.searchParams.set("rifa", id); history.replaceState(null, "", url);
+  status("Actualizando disponibilidad", "loading"); render(); refresh();
+}
+function showConflict(number, record) {
+  notice(`El ${number} ya tiene dueño`, `${record?.clienteNombre || "Otro participante"} ya agendó este número${record?.updatedAt ? ` el ${new Intl.DateTimeFormat("es-CO", {timeZone:"America/Bogota",day:"numeric",month:"short",hour:"2-digit",minute:"2-digit",second:"2-digit"}).format(new Date(record.updatedAt))}` : ""}. Elige otro de los números libres.`);
+}
+function openNumber(n) {
+  if (state.busy) return;
+  const r = activeRaffle(); if (!r) return;
+  if (!state.protocol) { notice("Estamos preparando las reservas", "El organizador debe actualizar el servicio de reservas. Mientras tanto puedes consultar los detalles de la rifa."); return; }
+  if (!state.online || !navigator.onLine) { notice("Conéctate para reservar", "Necesitamos comprobar la disponibilidad en línea. Intenta de nuevo cuando se restablezca la conexión."); refresh(); return; }
+  const record = numberRecord(n);
+  if (record?.estado !== "libre" && record && !isAdmin()) { showConflict(n, record); return; }
+  state.selected = { rifaId: r.id, numeroId: n, requestId: uuid(), revision: record?.revision || 0 };
+  $("numberForm").reset(); $("selectedNumber").textContent = n; $("numberError").textContent = "";
+  $("clienteNombre").value = isAdmin() ? record?.clienteNombre || "" : "";
+  $("clienteTelefono").value = isAdmin() ? record?.clienteTelefono || "" : "";
+  $("estadoSelect").value = record?.estado === "pagado" ? "pagado" : "apartado";
+  if (record?.paymentMethod) document.querySelector(`input[name=paymentMethod][value="${record.paymentMethod === "efectivo" ? "efectivo" : "transferencia"}"]`).checked = true;
+  $("stateField").hidden = !isAdmin(); $("releaseNumberButton").hidden = !isAdmin() || !record || record.estado === "libre";
+  $("numberDialogTitle").textContent = isAdmin() ? "Gestionar este número" : "Un paso más para participar";
+  $("numberHelp").textContent = isAdmin() ? "Actualiza los datos del participante y registra su pago." : "Completa tus datos y confirma tu reserva.";
+  $("saveNumberButton").textContent = isAdmin() ? "Guardar cambios →" : "Confirmar mi reserva →";
+  updatePaymentField(); $("numberDialog").showModal();
+}
+function updatePaymentField() {
+  const paid = isAdmin() && $("estadoSelect").value === "pagado";
+  $("paymentField").hidden = !paid;
+  document.querySelectorAll("input[name=paymentMethod]").forEach((input) => { input.required = paid; });
+}
+async function saveNumber(event) {
+  event.preventDefault();
+  if (state.busy || !state.selected) return;
+  const nombre = $("clienteNombre").value.trim();
+  const telefono = $("clienteTelefono").value.trim();
+  const method = document.querySelector("input[name=paymentMethod]:checked")?.value || "";
+  if (nombre.length < 2 || telefono.replace(/\D/g, "").length < 7) { $("numberError").textContent = "Escribe un nombre y un celular válido (mínimo 7 dígitos)."; return; }
+  const admin = isAdmin();
+  if (admin && $("estadoSelect").value === "pagado" && !method) { $("numberError").textContent = "Elige Nequi / transferencia o efectivo para registrar el pago."; return; }
+  const fingerprint = JSON.stringify([nombre, telefono, admin ? $("estadoSelect").value : "apartado", admin ? method : ""]);
+  if (state.selected.fingerprint && state.selected.fingerprint !== fingerprint) state.selected.requestId = uuid();
+  state.selected.fingerprint = fingerprint;
+  const selection = { ...state.selected };
+  const payload = { ...selection, clienteNombre: nombre, clienteTelefono: telefono,
+    ...(admin ? { estado: $("estadoSelect").value, paymentMethod: $("estadoSelect").value === "pagado" ? method : "" } : {}) };
+  state.busy = true; $("saveNumberButton").disabled = true; $("saveNumberButton").textContent = "Confirmando…";
+  $("numberError").textContent = "";
+  try {
+    const result = await api(admin ? "updateNumber" : "reserveNumber", payload, admin);
+    $("numberDialog").close();
+    if (result.code === "CONFLICT") showConflict(selection.numeroId, result.record);
+    else if (result.code === "STALE") notice("Este número cambió", "Otra sesión actualizó el número. Revisa los datos actuales antes de guardar.");
+    else notice(admin ? "Cambios guardados" : `¡El ${selection.numeroId} es tuyo!`, admin ? "El registro quedó actualizado en el servidor." : `Tu reserva a nombre de ${result.record?.clienteNombre || nombre} quedó confirmada. Acuerda el pago con ${activeRaffle()?.responsable || "la persona responsable"}.`, true);
+    state.selected = null; state.generation++; await refresh();
+  } catch (error) { $("numberError").textContent = error.message; }
+  finally { state.busy = false; $("saveNumberButton").disabled = false; $("saveNumberButton").textContent = isAdmin() ? "Guardar cambios →" : "Confirmar mi reserva →"; }
+}
+async function releaseNumber() {
+  if (!isAdmin() || !state.selected || state.busy) return;
+  if (!confirm(`¿Liberar el número ${state.selected.numeroId}? Se borrarán los datos y el pago registrado.`)) return;
+  state.busy = true; $("releaseNumberButton").disabled = true;
+  try {
+    await api("releaseNumber", state.selected, true); $("numberDialog").close(); state.selected = null;
+    state.generation++; await refresh(); toast("Número liberado.");
+  } catch (error) { $("numberError").textContent = error.message; }
+  finally { state.busy = false; $("releaseNumberButton").disabled = false; }
+}
+async function login(event) {
+  event.preventDefault();
+  if (!state.protocol) { $("adminError").textContent = "El servicio debe actualizarse para habilitar el resumen privado."; return; }
+  $("loginButton").disabled = true; $("loginButton").textContent = "Verificando…"; $("adminError").textContent = "";
+  try {
+    const result = await api("login", { pin: $("pinInput").value });
+    if (!result.token || !result.expiresAt) throw new Error("El servidor no confirmó la sesión.");
+    state.token = result.token; state.expiresAt = result.expiresAt; state.generation++;
+    $("pinInput").value = ""; $("adminDialog").close(); await refresh(); renderAdmin();
+    toast("Sesión de administrador iniciada.");
+  } catch (error) { $("adminError").textContent = error.message; }
+  finally { $("pinInput").value = ""; $("loginButton").disabled = false; $("loginButton").textContent = "Entrar al resumen →"; }
+}
+function logout(notify = true) {
+  const token = state.token;
+  state.token = null; state.expiresAt = 0; state.summary = null; state.selected = null; state.records = [];
+  state.generation++; state.online = false;
+  for (const id of ["numberDialog", "raffleDialog"]) $(id).close();
+  $("numberForm").reset(); $("raffleForm").reset(); render(); refresh();
+  if (token) api("logout", { sessionToken: token }).catch(() => {});
+  if (notify) toast("Sesión cerrada. Estás en la vista de participante.");
+}
+async function createRaffle(event) {
+  event.preventDefault(); if (!isAdmin()) return;
+  const payload = Object.fromEntries(["titulo", "precio", "cantidad", "premio", "loteria", "fecha", "hora", "responsable", "condiciones"].map((id) => [id, $(id).value.trim()]));
+  // Keep the ID across network retries, so an uncertain response cannot duplicate a raffle.
+  $("raffleForm").dataset.requestId ||= uuid(); payload.rifaId = $("raffleForm").dataset.requestId;
+  $("createRaffleButton").disabled = true; $("raffleError").textContent = "";
+  try { const result = await api("createRaffle", payload, true); $("raffleDialog").close(); state.activeId = result.rifaId; state.generation++; await refresh(); toast("Rifa creada. Ya puedes compartirla."); }
+  catch (error) { $("raffleError").textContent = error.message; }
+  finally { $("createRaffleButton").disabled = false; }
+}
+async function deleteRaffle(id) {
+  if (!isAdmin() || !confirm("¿Eliminar esta rifa y todos sus números? Esta acción no se puede deshacer.")) return;
+  try { await api("deleteRifa", { rifaId: id }, true); state.generation++; await refresh(); toast("Rifa eliminada."); }
+  catch (error) { notice("No se pudo eliminar", error.message); }
+}
+async function shareRaffle() {
+  const r = activeRaffle(); if (!r) { toast("Primero selecciona una rifa."); return; }
+  const url = new URL(location.href); url.search = ""; url.hash = ""; url.searchParams.set("rifa", r.id);
+  try {
+    if (navigator.share) await navigator.share({ title: r.titulo, text: `Participa por ${r.premio}. Elige tu número.`, url: url.href });
+    else { await navigator.clipboard.writeText(url.href); toast("Enlace de la rifa copiado."); }
+  } catch (error) { if (error.name !== "AbortError") notice("Comparte esta rifa", url.href); }
+}
+function setupPWA() {
+  if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js").catch(() => {});
+  window.addEventListener("beforeinstallprompt", (event) => { event.preventDefault(); state.installPrompt = event; $("installButton").hidden = false; });
+  window.addEventListener("appinstalled", () => { state.installPrompt = null; $("installButton").hidden = true; toast("Rifa Pro ya está en tu inicio."); });
+  const ios = /iPad|iPhone|iPod/.test(navigator.userAgent);
+  if (ios && !window.matchMedia("(display-mode: standalone)").matches && !navigator.standalone) $("installButton").hidden = false;
+  $("installButton").addEventListener("click", async () => {
+    if (!state.installPrompt) { notice("Rifa Pro en tu inicio", "En Safari, toca Compartir y luego Agregar a inicio. El icono de tu rifa quedará siempre a mano."); return; }
+    const prompt = state.installPrompt; state.installPrompt = null; await prompt.prompt(); await prompt.userChoice; $("installButton").hidden = true;
+  });
+}
+function init() {
+  try { const cached = JSON.parse(localStorage.getItem(CACHE_KEY)); if (Array.isArray(cached?.rifas)) state.rifas = cached.rifas.map(normalizeRaffle); setTheme(localStorage.getItem("rifapro.theme") === "dark"); } catch { /* Start clean. */ }
+  const requested = new URL(location.href).searchParams.get("rifa");
+  state.activeId = state.rifas.find((r) => r.id === requested)?.id || state.rifas[0]?.id || null;
+  render(); status("Conectando", "loading");
+  $("themeToggle").addEventListener("click", () => setTheme(!document.body.classList.contains("dark-mode")));
+  $("adminButton").addEventListener("click", () => { if (isAdmin()) logout(); else { $("adminError").textContent = ""; $("adminDialog").showModal(); } });
+  $("adminForm").addEventListener("submit", login); $("numberForm").addEventListener("submit", saveNumber);
+  $("raffleForm").addEventListener("submit", createRaffle); $("releaseNumberButton").addEventListener("click", releaseNumber);
+  $("estadoSelect").addEventListener("change", updatePaymentField);
+  $("newRaffleButton").addEventListener("click", () => { $("raffleForm").reset(); delete $("raffleForm").dataset.requestId; $("raffleError").textContent = ""; $("raffleDialog").showModal(); });
+  $("numberSearch").addEventListener("input", () => { state.page = 1; renderNumbers(); });
+  $("shareButton").addEventListener("click", shareRaffle);
+  $("listaRifas").addEventListener("click", (event) => { const button = event.target.closest("[data-raffle],[data-delete]"); if (button?.dataset.raffle) switchRaffle(button.dataset.raffle); else if (button?.dataset.delete) deleteRaffle(button.dataset.delete); });
+  $("dashboard").addEventListener("click", (event) => { const n = event.target.closest("[data-number]")?.dataset.number; if (n !== undefined) openNumber(n); });
+  $("paginacion").addEventListener("click", (event) => { const button = event.target.closest("[data-page]"); if (button && !button.disabled) { state.page = Number(button.dataset.page); renderNumbers(); $("numeros").scrollIntoView({ block: "start", behavior: "smooth" }); } });
+  document.querySelectorAll("[data-close]").forEach((button) => button.addEventListener("click", () => { if (!state.busy) $(button.dataset.close).close(); }));
+  $("numberDialog").addEventListener("cancel", (event) => { if (state.busy) event.preventDefault(); });
+  $("numberDialog").addEventListener("close", () => { if (!state.busy) state.selected = null; });
+  window.addEventListener("offline", () => { state.online = false; status("Sin conexión · solo consulta", "offline"); renderNumbers(); });
+  window.addEventListener("online", refresh); document.addEventListener("visibilitychange", () => { if (!document.hidden) { if (state.token && !isAdmin()) logout(); refresh(); } });
+  setupPWA(); refresh();
+  setInterval(() => { if (state.token && !isAdmin()) logout(); refresh(); }, Math.max(3000, CONFIG.pollInterval || 5000));
+}
 document.addEventListener("DOMContentLoaded", init);
