@@ -6,7 +6,7 @@ const crypto = require('node:crypto');
 const code = fs.readFileSync('backend/Code.gs', 'utf8');
 
 function server(legacyRows) {
-  const sheets = new Map(), properties = new Map([['SPREADSHEET_ID','test'],['ADMIN_PIN','4826']]), cache = new Map();
+  const sheets = new Map(), properties = new Map([['SPREADSHEET_ID','test'],['ADMIN_PIN','4826'],['DEVELOPER_PASSWORD','Developer-fixture-4826']]), cache = new Map();
   let locked = false;
   const metrics = { entryReads: 0, entryWrites: 0, ledgerWrites: 0, opens: 0 };
   class Sheet {
@@ -35,7 +35,7 @@ function server(legacyRows) {
   if (!legacyRows) ctx.createRaffle_({ rifaId:'test',titulo:'Rifa',cantidad:100,precio:20000,premio:'$500.000',loteria:'Boyacá',fecha:'2026-10-31',hora:'17:00',responsable:'Organizadora' });
   const post = (action,payload = {}, token) => JSON.parse(ctx.doPost({ postData:{contents:JSON.stringify({action,payload,token})} }).value);
   const get = (action,params = {}) => JSON.parse(ctx.doGet({ parameter:{action,...params} }).value);
-  const login = () => post('login',{pin:'4826'}).token;
+  const login = () => post('developerLogin',{password:'Developer-fixture-4826'}).token;
   return {ctx,post,get,login,cache,properties,sheets,metrics};
 }
 function reservation(extra = {}) { return { rifaId:'test',numeroId:'07',clienteNombre:'Ana Pérez',clienteTelefono:'3001234567',requestId:crypto.randomUUID(),...extra }; }
@@ -113,8 +113,8 @@ test('bounds, customer validation and malformed request IDs are rejected', () =>
 });
 test('duplicate raffle creation is idempotent and deletion isolates other raffles', () => {
   const s = server(), token = s.login(); assert.equal(s.post('createRaffle',{rifaId:'test'},token).ok,true);
-  assert.equal(s.get('getRifas').data.length,1); s.post('reserveNumber',reservation());
-  assert.equal(s.post('deleteRifa',{rifaId:'test'},token).ok,true); assert.equal(s.get('getRifas').data.length,0);
+  assert.equal(s.get('getRifas',{rifaId:'test'}).data.length,1); s.post('reserveNumber',reservation());
+  assert.equal(s.post('deleteRifa',{rifaId:'test'},token).ok,true); assert.equal(s.get('getRifas',{rifaId:'test'}).data.length,0);
   assert.equal(s.post('deleteRifa',{rifaId:'test'},token).ok,true);
   assert.equal(s.post('reserveNumber',reservation()).code,'NOT_FOUND');
 });
@@ -125,7 +125,7 @@ test('JSONP rejects executable callback names and exposes read actions only', ()
 });
 test('setup is repeatable and does not delete existing data', () => {
   const s = server(); s.post('reserveNumber',reservation()); s.ctx.prepararSistema();
-  assert.equal(s.get('getRifas').data.length,1); assert.equal(s.get('getRifaNumbers',{rifaId:'test'}).data.length,1);
+  assert.equal(s.get('getRifas',{rifaId:'test'}).data.length,1); assert.equal(s.get('getRifaNumbers',{rifaId:'test'}).data.length,1);
 });
 
 const legacyHeaders=['rifaId','numeroId','estado','clienteNombre','clienteTelefono','updatedAt','titulo','precio','premio','loteria','fecha','hora','responsable'];
@@ -133,7 +133,7 @@ const legacyMeta=['old','__META__','meta','100','','2026-10-01T10:00:00Z','Rifa 
 const legacyPaid=['old','07','pagado','Ana anterior','3007654321','2026-10-02T10:00:00Z','Rifa anterior',20000,'$500.000','Boyacá','2026-10-31','17:00','Organizadora'];
 test('original 13-column spreadsheet and __META__ rows remain readable without migration', () => {
   const s=server([legacyHeaders,legacyMeta,legacyPaid]);
-  const r=s.get('getRifas');assert.equal(r.data[0].titulo,'Rifa anterior');assert.equal(r.data[0].cantidad,100);
+  const r=s.get('getRifas',{rifaId:'old'});assert.equal(r.data[0].titulo,'Rifa anterior');assert.equal(r.data[0].cantidad,100);
   const snap=s.post('adminSnapshot',{rifaId:'old'},s.login());assert.equal(snap.data[0].clienteNombre,'Ana anterior');assert.equal(snap.data[0].clienteTelefono,'3007654321');
   assert.equal(snap.summary.recaudado,20000);assert.equal(snap.summary.sinClasificar,20000);
   assert.deepEqual(s.sheets.get('rifas').data[1],legacyMeta);assert.deepEqual(s.sheets.get('rifas').data[2],legacyPaid);
@@ -155,11 +155,11 @@ test('bound spreadsheet is supported and setup saves its ID for the web applicat
 });
 test('date and time cells from Sheets are normalized for the existing ticket', () => {
   const meta=[...legacyMeta];meta[10]=new Date('2026-10-31T05:00:00Z');meta[11]=new Date('2026-10-31T22:00:00Z');
-  const s=server([legacyHeaders,meta]);const r=s.get('getRifas').data[0];assert.equal(r.fecha,'2026-10-31');assert.equal(r.hora,'17:00');
+  const s=server([legacyHeaders,meta]);const r=s.get('getRifas',{rifaId:'old'}).data[0];assert.equal(r.fecha,'2026-10-31');assert.equal(r.hora,'17:00');
 });
 test('unrelated raffles and their rows survive deletion', () => {
   const other=[...legacyMeta];other[0]='other';const s=server([legacyHeaders,legacyMeta,legacyPaid,other]);
-  assert.equal(s.post('deleteRifa',{rifaId:'old'},s.login()).ok,true);assert.equal(s.get('getRifas').data[0].rifaId,'other');
+  assert.equal(s.post('deleteRifa',{rifaId:'old'},s.login()).ok,true);assert.equal(s.get('getRifas',{rifaId:'other'}).data[0].rifaId,'other');
 });
 test('health endpoint is preserved', () => { assert.equal(server().get('health').sheet,'rifas'); });
 test('editing a duplicated legacy number cleans only its duplicates', () => {
@@ -195,10 +195,10 @@ test('editing the prize keeps participants, payments, price and quantity unchang
   assert.equal(s.get('getSnapshot',{rifaId:'old'}).rifas[0].premio,'Una bicicleta');
 });
 test('prize edits are idempotent, reject stale changes and invalidate cached metadata', () => {
-  const s=server(),token=s.login(),p={rifaId:'test',premio:'$800.000',titulo:'Rifa nueva',revision:0,requestId:crypto.randomUUID()};s.get('getRifas');
+  const s=server(),token=s.login(),p={rifaId:'test',premio:'$800.000',titulo:'Rifa nueva',revision:0,requestId:crypto.randomUUID()};s.get('getRifas',{rifaId:'test'});
   assert.equal(s.post('updatePrize',p,token).ok,true);assert.equal(s.post('updatePrize',p,token).ok,true);
   assert.equal(s.post('updatePrize',{...p,requestId:crypto.randomUUID(),premio:'Otro'},token).code,'STALE');
-  assert.equal(s.get('getRifas').data[0].premio,'$800.000');assert.equal(s.get('getRifas').data[0].revision,1);
+  assert.equal(s.get('getRifas',{rifaId:'test'}).data[0].premio,'$800.000');assert.equal(s.get('getRifas',{rifaId:'test'}).data[0].revision,1);
 });
 test('batch writes group contiguous number rows and the ledger while reading only once', () => {
   const s=server(),token=s.login();Object.keys(s.metrics).forEach(key=>s.metrics[key]=0);
@@ -255,7 +255,7 @@ test('owners and shared links are isolated from every other card and legacy raff
   const snapshot=s.post('adminSnapshot',{},a.token);assert.deepEqual(snapshot.rifas.map(r=>r.rifaId),[a.p.rifaId]);
   for(const action of ['adminSnapshot','updateNumber','releaseNumber','updatePrize','deleteRifa'])assert.equal(s.post(action,reservation({rifaId:b.p.rifaId}),a.token).code,'FORBIDDEN',action);
   const batch=s.post('batchNumbers',{changes:[{action:'updateNumber',payload:reservation({rifaId:b.p.rifaId,estado:'pagado',paymentMethod:'efectivo',revision:0})}]},a.token);assert.equal(batch.results[0].code,'FORBIDDEN');
-  assert.deepEqual(s.get('getRifas').data.map(r=>r.rifaId),['test']);
+  assert.deepEqual(s.get('getRifas',{rifaId:'test'}).data.map(r=>r.rifaId),['test']);
   assert.deepEqual(s.get('getSnapshot',{rifaId:a.p.rifaId}).rifas.map(r=>r.rifaId),[a.p.rifaId]);
   assert.equal(s.post('ownerLogin',{rifaId:b.p.rifaId,ownerKey:a.p.ownerKey}).code,'INVALID_KEY');
   assert.equal(s.post('updateNumber',reservation({rifaId:a.p.rifaId,estado:'pagado',paymentMethod:'efectivo',revision:0}),a.token).ok,true);
@@ -285,4 +285,43 @@ test('deleted cards cannot be restored by replaying payment approval or an old c
   assert.equal(s.post('deleteRifa',{rifaId:p.rifaId},token).ok,true);
   assert.equal(s.post('approveCard',{rifaId:p.rifaId},admin).code,'NOT_FOUND');
   assert.equal(s.post('orderCard',p).order.status,'deleted');assert.equal(s.get('getSnapshot',{rifaId:p.rifaId}).rifas.length,0);
+});
+test('raffle password cannot log into the developer panel or approve cards',()=>{
+  const s=server(),owner=s.post('login',{pin:'4826',rifaId:'test'});
+  assert.equal(owner.role,'owner');assert.equal(owner.rifaId,'test');assert.equal(owner.order.legacy,true);
+  assert.equal(s.post('developerLogin',{password:'4826'}).ok,false);
+  for(const action of ['developerDashboard','listOrders','approveCard','createRaffle'])assert.equal(s.post(action,{rifaId:'test'},owner.token).code,'FORBIDDEN',action);
+  assert.equal(s.post('adminSnapshot',{rifaId:'test'},owner.token).rifas.length,1);
+  const independent=ordered(s);s.post('approveCard',{rifaId:independent.p.rifaId},s.login());
+  assert.equal(s.post('adminSnapshot',{rifaId:independent.p.rifaId},owner.token).code,'FORBIDDEN');
+});
+test('developer sees every card including unpaid, active and legacy; public sees only its shared card',()=>{
+  const s=server(),a=ordered(s),b=ordered(s),developer=s.login();s.post('approveCard',{rifaId:a.p.rifaId},developer);
+  assert.equal(s.post('developerDashboard',{},b.token).code,'FORBIDDEN');
+  const dashboard=s.post('developerDashboard',{},developer);assert.equal(dashboard.cards.length,3);
+  assert.equal(dashboard.cards.find(c=>c.rifaId===b.p.rifaId).status,'pending');
+  assert.equal(dashboard.cards.find(c=>c.rifaId===a.p.rifaId).status,'active');
+  assert.equal(dashboard.cards.find(c=>c.rifaId==='test').legacy,true);
+  assert.equal(s.get('getSnapshot').rifas.length,0);assert.equal(s.get('getRifas').data.length,0);
+  assert.deepEqual(s.get('getSnapshot',{rifaId:'test'}).rifas.map(r=>r.rifaId),['test']);
+});
+test('legacy password is bound to exactly one raffle when multiple legacy cards exist',()=>{
+  const s=server(),p={rifaId:'second',titulo:'Otra',cantidad:100,precio:20000,premio:'Premio',loteria:'Boyacá',fecha:'2099-10-31',hora:'17:00',responsable:'Otro'};
+  s.post('createRaffle',p,s.login());assert.equal(s.post('login',{pin:'4826'}).ok,false);
+  s.properties.set('LEGACY_RAFFLE_ID','test');assert.equal(s.post('login',{pin:'4826',rifaId:'second'}).code,'FORBIDDEN');
+  const owner=s.post('login',{pin:'4826',rifaId:'test'});assert.equal(owner.role,'owner');
+  assert.equal(s.post('adminSnapshot',{rifaId:'second'},owner.token).code,'FORBIDDEN');
+});
+test('old global sessions are revoked and developer requires a separately configured password',()=>{
+  const s=server(),token=crypto.randomUUID()+crypto.randomUUID();
+  for(const raw of [String(Date.now()+60000),JSON.stringify({role:'platform',expiresAt:Date.now()+60000})]){s.cache.set('session:'+token,raw);assert.equal(s.post('developerDashboard',{},token).code,'UNAUTHORIZED');}
+  s.properties.delete('DEVELOPER_PASSWORD');assert.equal(s.post('developerLogin',{password:'4826'}).ok,false);
+  s.properties.set('DEVELOPER_PASSWORD','Developer-fixture-4826');const session=s.post('developerLogin',{password:'Developer-fixture-4826'});assert.equal(session.role,'developer');
+  assert.equal(s.post('developerDashboard',{},session.token).ok,true);
+});
+test('developer and raffle login attempt limits are separate',()=>{
+  const s=server();for(let i=0;i<8;i++)s.post('login',{pin:'wrong'});
+  assert.equal(s.post('developerLogin',{password:'Developer-fixture-4826'}).role,'developer');
+  for(let i=0;i<8;i++)s.post('developerLogin',{password:'wrong'});
+  assert.equal(s.post('developerLogin',{password:'Developer-fixture-4826'}).code,'RATE_LIMIT');
 });

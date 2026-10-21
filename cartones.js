@@ -12,11 +12,11 @@ function scrollToNumbers() {
   $("numbersTitle").tabIndex = -1; $("numbersTitle").focus({ preventScroll: true });
 }
 function renderCartones() {
-  $("newRaffleButton").hidden = !isPlatform();
-  $("adminButtonText").textContent = hasSession() ? "Cerrar sesión" : "Administrador";
+  $("newRaffleButton").hidden = true;
+  $("adminButtonText").textContent = hasSession() ? "Cerrar sesión" : developerPage ? "Desarrollador" : "Mi rifa";
   $("publicCreateButton").hidden = hasSession();
   document.querySelector(".creator-entry").hidden = hasSession();
-  $("ownerCard").hidden = !(hasSession() && state.role === "owner");
+  $("ownerCard").hidden = !(hasSession() && state.role === "owner" && !state.ownerOrder?.legacy);
   if (state.ownerOrder) {
     $("ownerCardTitle").textContent = state.ownerOrder.titulo;
     $("ownerCardStatus").textContent = paymentLabels[state.ownerOrder.status] || "Por confirmar";
@@ -24,8 +24,19 @@ function renderCartones() {
     $("paidWhatsApp").hidden = ["active", "deleted"].includes(state.ownerOrder.status);
     $("enterMyCard").hidden = state.ownerOrder.status !== "active";
   }
-  $("ordersPanel").hidden = !(isPlatform() && state.capabilities.independentRaffles);
-  if ($( "ordersPanel").hidden) $("ordersList").replaceChildren();
+  $("developerPanel").hidden = !developerPage;
+  $("developerLoginForm").hidden = isPlatform();
+  $("ordersPanel").hidden = !(developerPage && isPlatform());
+  if ($("ordersPanel").hidden) { $("ordersList").replaceChildren(); $("developerStats").replaceChildren(); }
+  document.querySelector(".workspace").hidden = developerPage;
+  document.querySelector(".page-intro").hidden = developerPage;
+  if (developerPage) status(isPlatform() ? "Panel del desarrollador" : "Acceso privado", "online");
+  $("legacyAccessButton").hidden = !activeRaffle() || activeRaffle().independiente || developerPage;
+  $("numeros").hidden = !activeRaffle();
+  document.body.classList.toggle("landing-page", !developerPage && !activeRaffle() && !hasSession());
+  document.querySelector(".sidebar-heading").hidden = !activeRaffle();
+  $("listaRifas").hidden = !activeRaffle();
+  $("shareButton").hidden = !activeRaffle();
   const r = activeRaffle();
   $("expiryNotice").hidden = !r?.expiresAt;
   if (r?.expiresAt) $("expiryNotice").textContent = raffleExpired(r) ? "Cartón vencido · Los registros se conservan para consulta." : "Disponible hasta el " + new Intl.DateTimeFormat("es-CO", { day: "numeric", month: "long", year: "numeric", timeZone: "America/Bogota" }).format(new Date(Date.parse(r.expiresAt) - 1)) + " · Dos días después del sorteo.";
@@ -35,7 +46,7 @@ function renderCartones() {
 }
 function startPaidCard() {
   if (hasSession()) { toast("Cierra tu sesión antes de crear otro cartón independiente."); return; }
-  if (!state.capabilities.independentRaffles) { notice("Estamos habilitando los nuevos cartones", "El administrador debe aplicar la versión actualizada de Code.gs para crear cartones independientes."); return; }
+  if (!state.capabilities.independentRaffles) { notice("Estamos habilitando los nuevos cartones", "La creación de nuevos cartones estará disponible cuando el servicio esté listo. Intenta de nuevo más tarde."); return; }
   $("raffleForm").reset(); $("raffleForm").dataset.mode = "paid";
   $("raffleDialogTitle").textContent = "Tu rifa, tu propio espacio.";
   $("creatorFields").hidden = false; $("creatorPhone").required = true;
@@ -71,6 +82,7 @@ async function createPaidCard() {
   finally { button.disabled = false; button.textContent = "Continuar al pago · $1.000 →"; }
 }
 function useOwnerSession(result) {
+  if (result.role !== "owner" || !result.rifaId) throw new Error("El servidor no confirmó el acceso a este cartón.");
   state.token = result.token; state.expiresAt = result.expiresAt; state.role = "owner"; state.ownerOrder = result.order;
   state.activeId = result.rifaId; state.rifas = []; state.records = []; state.summary = null;
   state.generation++; state.online = true; state.capabilities.independentRaffles = true; state.capabilities.snapshot = true;
@@ -83,6 +95,7 @@ async function refreshOwnerOrder() {
 function clearOwnerAccess() {
   privateCardLink = ""; $("privateAccessLink").value = ""; $("ownerLinkInput").value = "";
   $("paymentDialog").close(); $("ownerLoginDialog").close();
+  $("developerPassword").value = "";
   try { sessionStorage.removeItem("rifapro.cardAccess"); } catch { /* Optional storage. */ }
 }
 async function enterOwnerLink(link) {
@@ -119,16 +132,36 @@ function downloadPaymentCard() {
   const a = document.createElement("a"); a.download = "pago-carton-rifa-pro.png"; a.href = canvas.toDataURL("image/png"); a.click();
 }
 async function loadOrders() {
-  if (!isPlatform() || !state.capabilities.independentRaffles || ordersLoading) return;
+  if (!isPlatform() || ordersLoading) return;
   const token = state.token; ordersLoading = true; $("refreshOrders").disabled = true;
   try {
-    const result = await api("listOrders", {}, true); if (state.token !== token) return;
-    const pending = result.orders.filter((o) => ["pending", "reviewing"].includes(o.status));
-    $("ordersList").innerHTML = pending.length ? pending.map((o) => `<article class="order-row"><div><strong>${escapeHTML(o.titulo)}</strong><small>${escapeHTML(o.contact)} · ${escapeHTML(paymentLabels[o.status])}</small><small class="order-id">${escapeHTML(o.rifaId)}</small></div><button type="button" class="button button-outline button-small" data-approve-card="${escapeHTML(o.rifaId)}">Aprobar $1.000</button></article>`).join("") : '<p class="muted">No hay cartones pendientes de aprobación.</p>';
+    const result = await api("developerDashboard", {}, true); if (state.token !== token) return;
+    state.capabilities = result.capabilities || state.capabilities;
+    const cards = result.cards;
+    const pending = cards.filter((o) => ["pending", "reviewing"].includes(o.status) && !o.expired);
+    const active = cards.filter((o) => o.status === "active" && !o.expired);
+    $("developerStats").innerHTML = [["Cartones", cards.length],["Por aprobar",pending.length],["Activos",active.length],["Vencidos",cards.filter((o) => o.expired && o.status !== "deleted").length]].map(([label,count]) => `<article class="kpi"><strong>${label}</strong>${count}</article>`).join("");
+    const filter = $("developerFilter").value;
+    const visible = cards.filter((o) => filter === "all" || (filter === "pending" ? pending.includes(o) : filter === "active" ? active.includes(o) : o.expired && o.status !== "deleted"));
+    $("ordersList").innerHTML = visible.length ? visible.map((o) => `<article class="order-row"><div><strong>${escapeHTML(o.titulo)}</strong><small>${escapeHTML(o.contact || "Rifa anterior")} · <span class="card-status ${o.status}">${escapeHTML(o.status === "deleted" ? "Eliminado" : o.expired ? "Vencido" : paymentLabels[o.status])}</span></small><small>Sorteo: ${escapeHTML(formatDate(o.fecha))}${o.legacy ? " · Cartón anterior" : " · $1.000 COP"}</small><small class="order-id">${escapeHTML(o.rifaId)}</small></div>${pending.includes(o) ? `<button type="button" class="button button-outline button-small" data-approve-card="${escapeHTML(o.rifaId)}">Aprobar $1.000</button>` : o.status === "active" ? `<a class="button button-outline button-small" target="_blank" rel="noopener noreferrer" href="${escapeHTML(rafflePublicLink(o.rifaId).href)}">Ver rifa ↗</a>` : ""}</article>`).join("") : '<p class="muted">No hay cartones en este estado.</p>';
   } catch (error) { toast(error.message); }
   finally { ordersLoading = false; $("refreshOrders").disabled = false; }
 }
 function initCartones() {
+  $("developerForm").addEventListener("submit", async (event) => {
+    event.preventDefault(); $("developerLoginButton").disabled = true; $("developerError").textContent = "";
+    const generation = state.generation;
+    try {
+      const result = await api("developerLogin", { password: $("developerPassword").value });
+      if (generation !== state.generation) return;
+      if (result.role !== "developer" || !result.token) throw new Error("No se confirmó el acceso del desarrollador.");
+      state.token = result.token; state.expiresAt = result.expiresAt; state.role = "developer"; state.ownerOrder = null; state.generation++;
+      render(); await loadOrders();
+    } catch (error) { $("developerError").textContent = error.message; }
+    finally { $("developerPassword").value = ""; $("developerLoginButton").disabled = false; }
+  });
+  $("developerFilter").addEventListener("change", loadOrders);
+  $("legacyAccessButton").addEventListener("click", () => { $("ownerLoginDialog").close(); $("adminError").textContent = ""; $("adminDialog").showModal(); });
   $("chooseNumbers").addEventListener("click", scrollToNumbers);
   $("publicCreateButton").addEventListener("click", startPaidCard);
   $("ownerAccessButton").addEventListener("click", () => { $("ownerLoginError").textContent = ""; try { $("ownerLinkInput").value = sessionStorage.getItem("rifapro.cardAccess") || ""; } catch {} $("ownerLoginDialog").showModal(); });
@@ -147,9 +180,8 @@ function initCartones() {
     button.disabled = true; button.textContent = "Activando…";
     try { await api("approveCard", { rifaId: button.dataset.approveCard }, true); toast("Cartón activado."); await loadOrders(); refresh(); } catch (error) { toast(error.message); button.disabled = false; button.textContent = "Reintentar activación"; }
   });
-  $("adminDialog").addEventListener("close", () => { if (isPlatform()) loadOrders(); });
   const incoming = new URL(location.href);
-  if (incoming.hash.startsWith("#acceso=")) {
+  if (!developerPage && incoming.hash.startsWith("#acceso=")) {
     const privateUrl = incoming.href; history.replaceState(null, "", incoming.pathname + incoming.search);
     enterOwnerLink(privateUrl).catch((error) => notice("No pudimos abrir tu cartón", error.message));
   }

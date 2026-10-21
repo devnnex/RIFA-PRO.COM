@@ -1,6 +1,7 @@
 /* Rifa Pro. Public data and admin data follow separate server contracts. */
 "use strict";
 const CONFIG = window.RIFA_CONFIG;
+const developerPage = new URL(location.href).searchParams.get("panel") === "desarrollador";
 const CACHE_KEY = "rifapro.public.v2";
 const $ = (id) => document.getElementById(id);
 const state = { rifas: [], activeId: null, records: [], summary: null, token: null,
@@ -8,14 +9,14 @@ const state = { rifas: [], activeId: null, records: [], summary: null, token: nu
   page: 1, selected: null, busy: false, installPrompt: null,
   capabilities: {}, pending: new Map(), pendingRaffles: new Map(), viewCache: new Map(),
   adminQueue: [], adminSending: false, writeEpoch: 0, prizeDraft: null,
-  role: "platform", ownerOrder: null, numberLabels: new Map() };
+  role: "visitor", ownerOrder: null, numberLabels: new Map() };
 let toastTimer;
 const money = (value) => new Intl.NumberFormat("es-CO", { style: "currency", currency: "COP", maximumFractionDigits: 0 }).format(Number(value) || 0);
 const escapeHTML = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
 const activeRaffle = () => state.rifas.find((r) => r.id === state.activeId);
 const hasSession = () => Boolean(state.token && Date.now() < state.expiresAt);
-const isAdmin = () => hasSession() && (state.role === "platform" || state.ownerOrder?.status === "active");
-const isPlatform = () => isAdmin() && state.role === "platform";
+const isAdmin = () => hasSession() && state.role === "owner" && state.ownerOrder?.status === "active";
+const isPlatform = () => hasSession() && state.role === "developer";
 const uuid = () => crypto.randomUUID();
 
 function normalizeRaffle(raw) {
@@ -134,6 +135,7 @@ async function api(action, payload = {}, privateRequest = false) {
 }
 
 async function refresh() {
+  if (developerPage) { if (isPlatform()) await loadOrders(); return; }
   if (state.refreshing || document.hidden) return;
   if (!navigator.onLine) { state.online = false; status("Sin conexión · solo consulta", "offline"); return; }
   state.refreshing = true;
@@ -168,6 +170,8 @@ async function refresh() {
     if (!snapshot.ok || !Array.isArray(snapshot.data) || !Array.isArray(catalog)) throw new Error("No pudimos actualizar la disponibilidad.");
     state.protocol = snapshot.protocol === 2 || state.protocol;
     state.capabilities = snapshot.capabilities || state.capabilities;
+    const requestedId = new URL(location.href).searchParams.get("rifa");
+    if (!isAdmin()) catalog = catalog.filter((r) => requestedId && String(r.rifaId || r.id) === requestedId);
     state.rifas = mergeRaffles(catalog.map(normalizeRaffle));
     if (!state.rifas.some((r) => r.id === state.activeId)) { state.activeId = state.rifas.find((r) => r.id === snapshot.rifaId)?.id || state.rifas[0]?.id || null; state.page = 1; }
     const rifa = activeRaffle();
@@ -194,7 +198,8 @@ function renderTicket() {
       markup("infoRifa", '<div class="empty-state"><span class="note-mark" aria-hidden="true">✧</span><h2>Tu cartón está en camino.</h2><p>Guarda tu enlace privado, realiza el pago y envía el comprobante. Podrás gestionar tu rifa cuando se apruebe la activación.</p></div>');
       return;
     }
-    markup("infoRifa", '<div class="empty-state"><span class="note-mark" aria-hidden="true">✧</span><h2>La próxima ilusión está por llegar.</h2><p>Las rifas publicadas aparecerán aquí. El administrador puede crear una nueva desde su espacio.</p></div>');
+    const requested = new URL(location.href).searchParams.get("rifa");
+    markup("infoRifa", requested ? '<div class="empty-state"><span class="note-mark" aria-hidden="true">✧</span><h2>Este cartón no está disponible.</h2><p>Comprueba el enlace con la persona responsable. Los cartones nuevos estarán disponibles después de aprobar su pago.</p></div>' : '<div class="empty-state"><span class="note-mark" aria-hidden="true">✧</span><h2>Tu rifa. Tu propio espacio.</h2><p>Crea un cartón por $1.000 COP. Tendrás un enlace para tus participantes y un acceso privado para gestionar números y pagos. Si te invitaron a participar, abre el enlace de esa rifa.</p></div>');
     return;
   }
   const prize = r.premio || r.titulo;
@@ -391,9 +396,10 @@ async function login(event) {
   if (!state.protocol) { $("adminError").textContent = "El servicio debe actualizarse para habilitar el resumen privado."; return; }
   $("loginButton").disabled = true; $("loginButton").textContent = "Verificando…"; $("adminError").textContent = "";
   try {
-    const result = await api("login", { pin: $("pinInput").value });
+    const result = await api("login", { pin: $("pinInput").value, rifaId: state.activeId });
     if (!result.token || !result.expiresAt) throw new Error("El servidor no confirmó la sesión.");
-    state.token = result.token; state.expiresAt = result.expiresAt; state.role = "platform"; state.ownerOrder = null; state.generation++;
+    if (result.role !== "owner" || !result.rifaId) throw new Error("El acceso de organizador debe actualizarse antes de continuar.");
+    useOwnerSession(result);
     $("pinInput").value = ""; $("adminDialog").close(); render(); refresh();
     toast("Sesión de administrador iniciada.");
   } catch (error) { $("adminError").textContent = error.message; }
@@ -403,7 +409,8 @@ function logout(notify = true) {
   const token = state.token;
   if (typeof clearOwnerAccess === "function") clearOwnerAccess();
   for (const [id, operation] of state.pendingRaffles) { state.rifas = state.rifas.filter((r) => r.id !== id); if (operation.before) state.rifas.unshift(operation.before); }
-  state.token = null; state.expiresAt = 0; state.role = "platform"; state.ownerOrder = null; state.summary = null; state.selected = null; state.records = [];
+  state.token = null; state.expiresAt = 0; state.role = "visitor"; state.ownerOrder = null; state.summary = null; state.selected = null; state.records = [];
+  state.rifas = []; state.activeId = new URL(location.href).searchParams.get("rifa");
   state.generation++; state.online = false; state.pending.clear(); state.pendingRaffles.clear(); state.adminQueue = []; state.prizeDraft = null;
   for (const id of ["numberDialog", "raffleDialog", "prizeDialog"]) $(id).close();
   $("numberForm").reset(); $("raffleForm").reset(); $("prizeForm").reset(); render(); refresh();
@@ -470,11 +477,11 @@ function setupPWA() {
 function init() {
   try { const cached = JSON.parse(localStorage.getItem(CACHE_KEY)); if (Array.isArray(cached?.rifas)) state.rifas = cached.rifas.map(normalizeRaffle); setTheme(localStorage.getItem("rifapro.theme") === "dark"); } catch { /* Start clean. */ }
   const requested = new URL(location.href).searchParams.get("rifa");
-  state.rifas = state.rifas.filter((r) => requested ? r.id === requested : !r.independiente);
+  state.rifas = state.rifas.filter((r) => !developerPage && requested && r.id === requested);
   state.activeId = state.rifas.find((r) => r.id === requested)?.id || state.rifas[0]?.id || null;
   render(); status("Conectando", "loading");
   $("themeToggle").addEventListener("click", () => setTheme(!document.body.classList.contains("dark-mode")));
-  $("adminButton").addEventListener("click", () => { if (hasSession()) logout(); else { $("adminError").textContent = ""; $("adminDialog").showModal(); } });
+  $("adminButton").addEventListener("click", () => { if (hasSession()) logout(); else if (developerPage) $("developerPassword").focus(); else $("ownerAccessButton").click(); });
   $("adminForm").addEventListener("submit", login); $("numberForm").addEventListener("submit", saveNumber);
   $("raffleForm").addEventListener("submit", createRaffle); $("releaseNumberButton").addEventListener("click", releaseNumber);
   $("estadoSelect").addEventListener("change", updatePaymentField);

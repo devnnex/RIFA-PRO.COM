@@ -33,7 +33,7 @@ const fixture = '(' + require('../tests/browser-fixture.cjs').bootstrap.toString
     const screenshot=async(name)=>{const r=await send('Page.captureScreenshot',{format:'png',captureBeyondViewport:true});fs.writeFileSync('.qa/'+name+'.png',Buffer.from(r.data,'base64'));};
     await send('Page.enable'); await send('Runtime.enable'); await send('Page.addScriptToEvaluateOnNewDocument',{source:fixture});
     await send('Emulation.setDeviceMetricsOverride',{width:1440,height:1100,deviceScaleFactor:1,mobile:false});
-    await send('Page.navigate',{url:'http://127.0.0.1:4173/RIFA-PRO.COM/'});
+    await send('Page.navigate',{url:'http://127.0.0.1:4173/RIFA-PRO.COM/?rifa=boleta'});
     await wait('document.querySelectorAll(".numero").length===100 && state.online');log('Page ready');
     assert.deepEqual(await evaluate('window.__qa.calls.map(c=>c.action)'),['getSnapshot']);
     assert(await evaluate('document.getElementById("adminSummary").hidden'));
@@ -49,7 +49,7 @@ const fixture = '(' + require('../tests/browser-fixture.cjs').bootstrap.toString
     await wait('document.getElementById("noticeDialog").open');assert((await evaluate('document.getElementById("noticeTitle").textContent')).includes('es tuyo'));await click('[data-close="noticeDialog"]');
     await click('[data-number="08"]');await set('#clienteNombre','Pedro QA');await set('#clienteTelefono','3001234567');await click('#saveNumberButton');
     await wait('document.getElementById("noticeDialog").open');assert((await evaluate('document.getElementById("noticeMessage").textContent')).includes('Marta'));await click('[data-close="noticeDialog"]');
-    await click('#adminButton');await set('#pinInput','9999');await click('#loginButton');await wait('document.getElementById("adminError").textContent.includes("incorrecta")');
+    await click('#adminButton');assert(await evaluate('document.getElementById("ownerLoginDialog").open'));await click('#legacyAccessButton');await set('#pinInput','9999');await click('#loginButton');await wait('document.getElementById("adminError").textContent.includes("incorrecta")');
     assert(await evaluate('document.getElementById("adminSummary").hidden'));await set('#pinInput','4826');await click('#loginButton');await wait('!document.getElementById("adminSummary").hidden');
     const prepare=async(n,method)=>{await click('[data-number="'+n+'"]');await set('#clienteNombre','Cliente '+n);await set('#clienteTelefono','3001234567');await click('[data-state="pagado"]');if(method)await click('input[value="'+method+'"]');};
     await prepare('09');assert.equal(await evaluate('document.getElementById("numberForm").checkValidity()'),false);await click('input[value="transferencia"]');
@@ -73,13 +73,8 @@ const fixture = '(' + require('../tests/browser-fixture.cjs').bootstrap.toString
     await click('[data-edit-prize]');await set('#editPremio','Premio rechazado');await evaluate('window.__qa.rejectPrize=true;document.getElementById("prizeForm").requestSubmit()');await wait('state.pendingRaffles.size===0');
     assert.equal(await evaluate('document.querySelector(".ticket-prize").textContent'),'$800.000');
     await wait('!state.refreshing');await screenshot('desktop-admin');
-    // Create and delete use the same immediate/pending confirmation model.
-    await click('#newRaffleButton');
-    for(const [id,value] of [['titulo','Rifa de prueba'],['premio','Una bicicleta'],['fecha','2026-12-01'],['responsable','Organizadora QA']])await set('#'+id,value);
-    await click('#createRaffleButton');assert(await evaluate('!document.getElementById("raffleDialog").open && state.pendingRaffles.size===1'));
-    await wait('state.pendingRaffles.size===0');const created=await evaluate('state.activeId');assert.notEqual(created,'boleta');
-    await click('[data-delete="'+created+'"]');assert(await evaluate('document.getElementById("confirmDialog").open'));await click('#confirmAccept');
-    assert(await evaluate('!state.rifas.some(r=>r.id==='+JSON.stringify(created)+')'));await wait('state.pendingRaffles.size===0');
+    // A raffle password never exposes platform approvals or free creation of other cards.
+    assert(await evaluate('state.role==="owner"&&!isPlatform()&&document.getElementById("developerPanel").hidden&&document.getElementById("newRaffleButton").hidden'));
     await click('#adminButton');await wait('state.online&&!isAdmin()');assert.equal(await evaluate('document.getElementById("kpiRecaudado").textContent'),'');
     // Timeout and retry preserve the same request ID and never show a false success.
     await evaluate('window.__qa.failAction="reserveNumber";window.__qa.calls=[]');await click('[data-number="11"]');await set('#clienteNombre','Reintento QA');await set('#clienteTelefono','3001234567');await click('#saveNumberButton');
@@ -106,14 +101,29 @@ const fixture = '(' + require('../tests/browser-fixture.cjs').bootstrap.toString
     assert(await evaluate('document.getElementById("paymentDialog").scrollWidth<=document.getElementById("paymentDialog").clientWidth'));
     await evaluate('document.getElementById("paidWhatsApp").addEventListener("click",e=>e.preventDefault(),{once:true});document.getElementById("paidWhatsApp").click()');await wait('state.ownerOrder.status==="reviewing"');assert(await evaluate('!isAdmin()'));
     await click('[data-close="paymentDialog"]');await click('#adminButton');await wait('!hasSession()');
-    await click('#adminButton');await set('#pinInput','4826');await click('#loginButton');await wait('document.querySelector("[data-approve-card]")!==null');
+    await send('Page.navigate',{url:'http://127.0.0.1:4173/RIFA-PRO.COM/?panel=desarrollador'});
+    await wait('document.getElementById("developerPanel")&&!document.getElementById("developerPanel").hidden');
+    assert(await evaluate('document.querySelector(".workspace").hidden&&document.getElementById("ordersPanel").hidden'));
+    await set('#developerPassword','4826');await click('#developerLoginButton');await wait('document.getElementById("developerError").textContent.includes("incorrecta")');
+    assert(await evaluate('!hasSession()'));await set('#developerPassword','Developer-fixture-4826');await click('#developerLoginButton');
+    await wait('document.querySelector("[data-approve-card]")!==null');assert(await evaluate('isPlatform()&&!isAdmin()&&document.getElementById("adminSummary").hidden'));
+    assert.equal(await evaluate('document.querySelectorAll(".order-row").length'),2);
+    await send('Emulation.setDeviceMetricsOverride',{width:1440,height:1100,deviceScaleFactor:1,mobile:false});
+    await screenshot('developer-dashboard-desktop');
+    await set('#developerFilter','pending');await evaluate('document.getElementById("developerFilter").dispatchEvent(new Event("change"))');await wait('document.querySelectorAll(".order-row").length===1');
     await click('[data-approve-card]');await click('#confirmAccept');await wait('document.getElementById("ordersList").textContent.includes("No hay cartones")');
-    await click('#adminButton');await wait('!hasSession()');await click('#ownerAccessButton');await set('#ownerLinkInput',ownerLink);await click('#ownerLoginButton');
-    await wait('isAdmin()&&state.role==="owner"&&!document.getElementById("adminSummary").hidden');
+    await set('#developerFilter','active');await evaluate('document.getElementById("developerFilter").dispatchEvent(new Event("change"))');await wait('document.querySelectorAll(".order-row").length===2');
+    await send('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:1,mobile:true});
+    assert(await evaluate('document.documentElement.scrollWidth<=innerWidth'));await screenshot('developer-dashboard-mobile');
+    await click('#adminButton');await wait('!hasSession()');assert.equal(await evaluate('document.getElementById("ordersList").textContent'),'');
+    await send('Page.navigate',{url:ownerLink});
+    await wait('typeof isAdmin==="function"&&isAdmin()&&state.role==="owner"&&!document.getElementById("adminSummary").hidden');
     assert.equal(await evaluate('state.rifas.length'),1);assert.equal(await evaluate('activeRaffle().titulo'),'Mi rifa independiente');assert(await evaluate('document.getElementById("ordersPanel").hidden'));
-    await click('#shareButton');await delay(150);assert(!(await evaluate('window.__copied')).includes('#acceso='));
+    await evaluate('window.__copied="";Object.defineProperty(navigator,"share",{value:undefined,configurable:true});navigator.clipboard.writeText=async text=>{window.__copied=text}');
+    await click('#shareButton');await delay(150);assert(!(await evaluate('window.__copied')).includes('#acceso='));assert((await evaluate('window.__copied')).includes('?rifa='));
     if(await evaluate('document.getElementById("noticeDialog").open'))await click('[data-close="noticeDialog"]');
     await click('#adminButton');await wait('!hasSession()&&state.online');
+    assert.equal(await evaluate('state.rifas.length'),1);
     for(const width of [320,375,390,768,1024]){
       await send('Emulation.setDeviceMetricsOverride',{width,height:844,deviceScaleFactor:1,mobile:width<768});await delay(120);
       assert(await evaluate('document.documentElement.scrollWidth<=innerWidth'),'horizontal overflow at '+width);
@@ -127,11 +137,15 @@ const fixture = '(' + require('../tests/browser-fixture.cjs').bootstrap.toString
     await click('[data-number="12"]');await wait('document.getElementById("noticeDialog").open');assert((await evaluate('document.getElementById("noticeTitle").textContent')).includes('Conéctate'));
     await send('Page.reload');await wait('document.getElementById("dashboard")!==null');assert.equal(await evaluate('document.title'),'Rifa Pro · Tu próximo número de la suerte');
     await send('Network.emulateNetworkConditions',{offline:false,latency:0,downloadThroughput:-1,uploadThroughput:-1});
-    await send('Page.navigate',{url:'http://127.0.0.1:4173/RIFA-PRO.COM/?legacy=1'});await wait('typeof state!=="undefined"&&state.online&&document.querySelectorAll(".numero").length===100');
+    await send('Page.navigate',{url:'http://127.0.0.1:4173/RIFA-PRO.COM/?legacy=1&rifa=boleta'});await wait('typeof state!=="undefined"&&state.online&&document.querySelectorAll(".numero").length===100');
     assert.deepEqual(await evaluate('window.__qa.calls.slice(0,3).map(c=>c.action)'),['getSnapshot','getRifas','getRifaNumbers']);
     assert(await evaluate('!state.capabilities.independentRaffles'));
+    assert.equal(await evaluate('state.rifas.length'),1);
+    await send('Page.navigate',{url:'http://127.0.0.1:4173/RIFA-PRO.COM/'});await wait('typeof state!=="undefined"&&state.online');
+    assert.equal(await evaluate('state.rifas.length'),0);assert(await evaluate('document.getElementById("numeros").hidden&&document.getElementById("developerPanel").hidden'));
+    await screenshot('public-landing');
     assert.equal(errors.length,0,JSON.stringify(errors));
-    log('PASS: immediate feedback '+instant.ms.toFixed(1)+'ms; stable DOM; single-request refresh; privacy; conflicts; transfer/cash; prize edits and rollback; batch writes; create/delete; retry identity; scroll CTA; independent cards; payment/key/download; WhatsApp receipt; manual approval; private access; 320–1024 layouts; 16px inputs; PWA offline.');
+    log('PASS: immediate feedback '+instant.ms.toFixed(1)+'ms; stable DOM; single-request refresh; privacy; conflicts; transfer/cash; prize edits and rollback; batch writes; retry identity; scroll CTA; independent cards; payment/key/download; WhatsApp receipt; separate developer credentials/dashboard/approval/filters; owner isolation; public link isolation; 320–1024 layouts; 16px inputs; PWA offline.');
     console.log('Screenshots saved in .qa/. Fixture backend only; live deployment still needs validation.');
   } finally { if(ws?.readyState===1)ws.close();browser.kill();preview.kill(); }
 })().catch((e)=>{log(e.stack);process.exitCode=1;});

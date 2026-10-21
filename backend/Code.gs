@@ -11,7 +11,7 @@ const TABLES = {
   orders: { name: "RifaPro_Cartones", headers: ["rifaId", "ownerHash", "estado", "createdAt", "updatedAt", "datos", "contacto", "importe"] }
 };
 const SESSION_SECONDS = 1800;
-const CAPABILITIES = { snapshot: true, editPrize: true, batchNumbers: true, writeSnapshot: true, independentRaffles: true, expiry: true };
+const CAPABILITIES = { snapshot: true, editPrize: true, batchNumbers: true, writeSnapshot: true, independentRaffles: true, expiry: true, developerPanel: true };
 const CARD_PRICE = 1000;
 let principal = null;
 let requestContext = null;
@@ -48,7 +48,8 @@ function doPost(event) {
   try {
     const request = JSON.parse(event.postData.contents);
     const payload = request.payload || {};
-    if (request.action === "login") return output_(login_(payload.pin));
+    if (request.action === "login") return output_(login_(payload.pin, payload.rifaId));
+    if (request.action === "developerLogin") return output_(developerLogin_(payload.password));
     if (request.action === "orderCard") return output_(orderCard_(payload));
     if (request.action === "ownerLogin") return output_(ownerLogin_(payload));
     if (request.action === "logout") {
@@ -58,12 +59,13 @@ function doPost(event) {
     }
     if (request.action === "reserveNumber") return output_(reserve_(payload));
     principal = requireAdmin_(request.token);
+    if (request.action === "developerDashboard") { platformOnly_(); return output_(developerDashboard_()); }
     if (request.action === "ownerStatus") return output_({ ok: true, order: ownerStatus_(principal) });
     if (request.action === "reportPayment") return output_(reportPayment_(principal));
     if (request.action === "listOrders") { platformOnly_(); return output_({ ok: true, orders: orders_().map(orderView_) }); }
     if (request.action === "approveCard") { platformOnly_(); return output_(approveCard_(payload)); }
     if (request.action === "adminSnapshot") {
-      const rifas = readRaffles_().filter((r) => principal.role === "platform" || r.rifaId === principal.rifaId);
+      const rifas = readRaffles_().filter((r) => principal.role === "developer" || r.rifaId === principal.rifaId);
       if (principal.role === "owner") authorizeRaffle_(payload.rifaId || principal.rifaId, false);
       const rifa = rifas.find((r) => r.rifaId === payload.rifaId) || rifas[0];
       // Read once: summary and displayed numbers refer to the same snapshot.
@@ -162,7 +164,8 @@ function readRaffles_() {
   });
 }
 function publicCatalog_(id) {
-  const cache = CacheService.getScriptCache(), key = "rifapro:catalog:v4";
+  if (!id) return [];
+  const cache = CacheService.getScriptCache(), key = "rifapro:catalog:v5";
   const cached = cache.get(key);
   let data = cached ? JSON.parse(cached) : null;
   if (!data) {
@@ -171,8 +174,8 @@ function publicCatalog_(id) {
       .map((r) => ({ ...r, independiente: orders.some((o) => o.rifaId === r.rifaId) }));
     const json = JSON.stringify(data); if (json.length < 80000) cache.put(key, json, 5);
   }
-  // A shared link shows one card. Independent cards never enter the shared directory.
-  return data.filter((r) => id ? r.rifaId === String(id) : !r.independiente).map((r) => ({ ...r, expired: r.expiresAt ? Date.now() >= Date.parse(r.expiresAt) : false }));
+  // All cards, including legacy cards, are accessible only by their own link.
+  return data.filter((r) => r.rifaId === String(id)).map((r) => ({ ...r, expired: r.expiresAt ? Date.now() >= Date.parse(r.expiresAt) : false }));
 }
 function publicRaffle_(id) { const r = publicCatalog_(id)[0]; if (!r) fail_("Este cartón aún no está activo o ya no está disponible.", "NOT_FOUND"); return r; }
 function expiry_(date) {
@@ -348,33 +351,53 @@ function summary_(rifa, records) {
     recaudado: paid.length * rifa.precio, meta: rifa.cantidad * rifa.precio,
     transferencia: transfer, efectivo: cash, sinClasificar: paid.length * rifa.precio - transfer - cash };
 }
-function login_(pin) {
+function verifyCredential_(value, expected, throttleKey) {
+  const props = PropertiesService.getScriptProperties();
+  let throttle = JSON.parse(props.getProperty(throttleKey) || "{}");
+  if (throttle.until > Date.now()) fail_("Demasiados intentos. Espera unos minutos para volver a entrar.", "RATE_LIMIT");
+  if (String(value || "") !== expected) {
+    if (!throttle.start || Date.now() - throttle.start > 300000) throttle = { start: Date.now(), attempts: 0 };
+    throttle.attempts = (throttle.attempts || 0) + 1;
+    if (throttle.attempts >= 8) throttle.until = Date.now() + 300000;
+    props.setProperty(throttleKey, JSON.stringify(throttle));
+    fail_("Contraseña incorrecta.", "INVALID_PIN");
+  }
+  props.deleteProperty(throttleKey);
+}
+function newSession_(actor) {
+  const token = Utilities.getUuid() + Utilities.getUuid(), expiresAt = Date.now() + SESSION_SECONDS * 1000;
+  CacheService.getScriptCache().put("session:" + token, JSON.stringify({ ...actor, expiresAt }), SESSION_SECONDS);
+  return { ok: true, token, expiresAt, ...actor };
+}
+function login_(pin, requestedId) {
   return locked_(() => {
-    const props = PropertiesService.getScriptProperties();
-    const expected = props.getProperty("ADMIN_PIN");
-    if (!expected || !/^\d{4}$/.test(expected)) fail_("El organizador debe configurar su contraseña en el servidor.");
-    // Persistent global throttle: cannot be bypassed by changing browser/client ID.
-    let throttle = JSON.parse(props.getProperty("LOGIN_THROTTLE") || "{}");
-    if (throttle.until > Date.now()) fail_("Demasiados intentos. Espera unos minutos para volver a entrar.", "RATE_LIMIT");
-    if (String(pin) !== expected) {
-      if (!throttle.start || Date.now() - throttle.start > 300000) throttle = { start: Date.now(), attempts: 0 };
-      throttle.attempts = (throttle.attempts || 0) + 1;
-      if (throttle.attempts >= 8) throttle.until = Date.now() + 300000;
-      props.setProperty("LOGIN_THROTTLE", JSON.stringify(throttle));
-      fail_("Contraseña incorrecta.", "INVALID_PIN");
-    }
-    props.deleteProperty("LOGIN_THROTTLE");
-    const token = Utilities.getUuid() + Utilities.getUuid();
-    const expiresAt = Date.now() + SESSION_SECONDS * 1000;
-    CacheService.getScriptCache().put(`session:${token}`, String(expiresAt), SESSION_SECONDS);
-    return { ok: true, token, expiresAt, role: "platform" };
+    const props = PropertiesService.getScriptProperties(), expected = props.getProperty("ADMIN_PIN");
+    if (!expected || !/^\d{4}$/.test(expected)) fail_("La contraseña de esta rifa no está configurada.");
+    verifyCredential_(pin, expected, "LOGIN_THROTTLE");
+    const orders = orders_(), legacy = readRaffles_().filter((r) => !orders.some((o) => o.rifaId === r.rifaId));
+    const configuredId = props.getProperty("LEGACY_RAFFLE_ID");
+    const rifa = configuredId ? legacy.find((r) => r.rifaId === configuredId) : legacy.length === 1 ? legacy[0] : null;
+    if (!rifa) fail_("Configura LEGACY_RAFFLE_ID para asociar la contraseña a una sola rifa.");
+    if (requestedId && String(requestedId) !== rifa.rifaId) fail_("Esta contraseña no pertenece a ese cartón.", "FORBIDDEN");
+    const order = { rifaId: rifa.rifaId, titulo: rifa.titulo, status: "active", legacy: true };
+    return { ...newSession_({ role: "owner", rifaId: rifa.rifaId, legacy: true }), order };
+  });
+}
+function developerLogin_(password) {
+  return locked_(() => {
+    const props = PropertiesService.getScriptProperties(), expected = props.getProperty("DEVELOPER_PASSWORD");
+    if (!expected || expected.length < 8) fail_("Configura DEVELOPER_PASSWORD con al menos 8 caracteres en las propiedades del servidor.");
+    if (expected === props.getProperty("ADMIN_PIN")) fail_("La contraseña del desarrollador debe ser distinta a la de una rifa.");
+    verifyCredential_(password, expected, "DEVELOPER_LOGIN_THROTTLE");
+    return newSession_({ role: "developer" });
   });
 }
 function requireAdmin_(token) {
-  if (!/^[a-f0-9-]{60,100}$/.test(String(token || ""))) fail_("Debes ingresar como administrador.", "UNAUTHORIZED");
-  const raw = CacheService.getScriptCache().get(`session:${token}`);
-  const session = raw && raw[0] === "{" ? JSON.parse(raw) : { role: "platform", expiresAt: Number(raw) };
-  if (!session || !session.expiresAt || session.expiresAt <= Date.now()) fail_("Tu sesión terminó. Ingresa de nuevo.", "UNAUTHORIZED");
+  if (!/^[a-f0-9-]{60,100}$/.test(String(token || ""))) fail_("Debes iniciar sesión.", "UNAUTHORIZED");
+  const raw = CacheService.getScriptCache().get("session:" + token);
+  // Previous global administrator sessions are revoked when roles are separated.
+  const session = raw && raw[0] === "{" ? JSON.parse(raw) : null;
+  if (!session || !["developer", "owner"].includes(session.role) || !session.expiresAt || session.expiresAt <= Date.now()) fail_("Tu sesión terminó. Ingresa de nuevo.", "UNAUTHORIZED");
   return session;
 }
 function createRaffle_(p) {
@@ -395,7 +418,7 @@ function createRaffleLocked_(p) {
       safeCell_(rifa.titulo), price, safeCell_(rifa.premio), safeCell_(rifa.loteria), rifa.fecha, rifa.hora,
       safeCell_(rifa.responsable), "", 0, "", safeCell_(rifa.condiciones)];
     table_("entries").appendRow(row); rows_("entries").push(row);
-    invalidateCache_("rifapro:catalog:v4");
+    invalidateCache_("rifapro:catalog:v5");
     return { ok: true, rifaId: id, rifa: { ...rifa, revision: 0 } };
 }
 function deleteRaffle_(id) {
@@ -411,7 +434,7 @@ function deleteRaffle_(id) {
     const order = orders_().find((o) => o.rifaId === String(id));
     if (order) { const row = rows_("orders")[order.row - 2]; row[2] = "deleted"; row[4] = new Date().toISOString(); table_("orders").getRange(order.row, 1, 1, 8).setValues([row]); }
     invalidateCache_(`public:${id}`);
-    invalidateCache_("rifapro:catalog:v4");
+    invalidateCache_("rifapro:catalog:v5");
     return { ok: true };
   });
 }
@@ -444,12 +467,22 @@ function updatePrize_(p) {
       const row = [rifa.rifaId, META_NUMBER_ID, "meta", String(rifa.cantidad), "", new Date().toISOString(), safeCell_(titulo), rifa.precio, safeCell_(premio), safeCell_(rifa.loteria), rifa.fecha, rifa.hora, safeCell_(rifa.responsable), "", revision, p.requestId, safeCell_(rifa.condiciones)];
       table_("entries").appendRow(row); entries.push(row);
     }
-    invalidateCache_("rifapro:catalog:v4");
+    invalidateCache_("rifapro:catalog:v5");
     return { ok: true, rifaId: rifa.rifaId, rifa: { ...rifa, premio, titulo, revision } };
   });
 }
 
-function platformOnly_() { if (principal?.role !== "platform") fail_("Esta acción corresponde al administrador de la plataforma.", "FORBIDDEN"); }
+function platformOnly_() { if (principal?.role !== "developer") fail_("Esta acción corresponde al desarrollador de la plataforma.", "FORBIDDEN"); }
+function developerDashboard_() {
+  const orders = orders_(), rifas = readRaffles_();
+  const cards = orders.map((o) => {
+    const current = rifas.find((r) => r.rifaId === o.rifaId);
+    return { ...orderView_(o), titulo: current ? current.titulo : o.draft.titulo,
+      expired: Date.now() >= Date.parse(expiry_(o.draft.fecha)), legacy: false };
+  });
+  rifas.filter((r) => !orders.some((o) => o.rifaId === r.rifaId)).forEach((r) => cards.push({ rifaId: r.rifaId, titulo: r.titulo, fecha: r.fecha, status: "active", expired: r.expired, legacy: true, amount: 0, contact: "", expiresAt: r.expiresAt }));
+  return { ok: true, capabilities: CAPABILITIES, cards };
+}
 function orders_() {
   return rows_("orders").map((row, index) => ({ rifaId: String(row[0]), hash: String(row[1]), status: String(row[2]),
     createdAt: isoDate_(row[3]), updatedAt: isoDate_(row[4]), draft: JSON.parse(row[5]), contact: unsheet_(row[6]), amount: Number(row[7]), row: index + 2 }));
@@ -460,6 +493,7 @@ function secretHash_(secret) {
   return Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, secret, Utilities.Charset.UTF_8).map((b) => (b & 255).toString(16).padStart(2, "0")).join("");
 }
 function ownerStatus_(actor) {
+  if (actor.role === "owner" && actor.legacy) { const r = raffle_(actor.rifaId); return { rifaId: r.rifaId, titulo: r.titulo, status: "active", legacy: true }; }
   if (actor.role !== "owner") fail_("Ingresa con el enlace privado de tu cartón.", "FORBIDDEN");
   const order = orders_().find((o) => o.rifaId === actor.rifaId);
   if (!order) fail_("No encontramos este cartón.", "NOT_FOUND");
@@ -467,10 +501,10 @@ function ownerStatus_(actor) {
 }
 function authorizeRaffle_(id, writing = true) {
   if (!principal) fail_("Ingresa para gestionar tu rifa.", "UNAUTHORIZED");
-  if (principal.role !== "platform") {
+  if (principal.role !== "developer") {
     if (String(id) !== principal.rifaId) fail_("Este cartón pertenece a otro organizador.", "FORBIDDEN");
     const order = orders_().find((o) => o.rifaId === String(id));
-    if (!order || order.status !== "active") fail_("Tu cartón se activará después de revisar el comprobante de pago.", "PAYMENT_PENDING");
+    if (principal.legacy ? Boolean(order) : (!order || order.status !== "active")) fail_("Tu cartón se activará después de revisar el comprobante de pago.", "PAYMENT_PENDING");
   }
   if (writing) assertOpen_(raffle_(id));
 }
@@ -523,7 +557,7 @@ function approveCard_(p) {
     createRaffleLocked_(order.draft);
     const row = rows_("orders")[order.row - 2]; row[2] = "active"; row[4] = new Date().toISOString();
     table_("orders").getRange(order.row, 1, 1, 8).setValues([row]);
-    invalidateCache_("rifapro:catalog:v4");
+    invalidateCache_("rifapro:catalog:v5");
     return { ok: true, order: orderView_(orders_().find((o) => o.rifaId === order.rifaId)) };
   });
 }
