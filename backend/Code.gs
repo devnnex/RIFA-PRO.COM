@@ -12,7 +12,7 @@ const TABLES = {
   access: { name: "RifaPro_Accesos", headers: ["rifaId", "pinSalt", "pinHash", "failedAttempts", "lockedUntil", "pinLookup"] }
 };
 const SESSION_SECONDS = 1800;
-const CAPABILITIES = { snapshot: true, editPrize: true, batchNumbers: true, writeSnapshot: true, independentRaffles: true, expiry: true, developerPanel: true, ownerPin: true, pinOnlyLogin: true };
+const CAPABILITIES = { snapshot: true, editPrize: true, batchNumbers: true, writeSnapshot: true, independentRaffles: true, expiry: true, developerPanel: true, ownerPin: true, pinOnlyLogin: true, publicPayments: true };
 const CARD_PRICE = 1000;
 let principal = null;
 let requestContext = null;
@@ -118,6 +118,11 @@ function rows_(key) {
   return requestContext.rows[key];
 }
 function text_(value, max) { return String(value == null ? "" : value).trim().slice(0, max); }
+function prizeText_(value) {
+  const text = text_(value, 120);
+  const format = (amount) => "$" + (amount.replace(/\D/g, "").replace(/^0+(?=\d)/, "") || "0").replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+  return /^\$?\s*\d[\d.,\s]*$/.test(text) ? format(text) : text.replace(/\$\s*\d[\d.,]*/g, format);
+}
 function safeCell_(value) { const s = String(value == null ? "" : value); return /^[=+@\-]/.test(s) ? "'" + s : s; }
 function unsheet_(value) { return String(value == null ? "" : value).replace(/^'(?=[=+@\-])/, ""); }
 function locked_(fn) {
@@ -205,12 +210,13 @@ function numberRows_(id) {
   return Array.from(selected.values());
 }
 function publicRecord_(record) {
-  return { numeroId: record.numeroId, estado: record.estado === "libre" ? "libre" : "apartado",
+  return { numeroId: record.numeroId, estado: ["libre", "apartado", "pagado"].includes(record.estado) ? record.estado : "apartado",
+    paymentMethod: record.estado === "pagado" && ["transferencia", "efectivo"].includes(record.paymentMethod) ? record.paymentMethod : "",
     clienteNombre: record.estado === "libre" ? "" : record.clienteNombre, updatedAt: record.updatedAt };
 }
 function publicSnapshot_(id) {
   const cache = CacheService.getScriptCache();
-  const key = `public:${id}`;
+  const key = `public:v3:${id}`;
   const cached = cache.get(key);
   if (cached) return JSON.parse(cached);
   const records = numberRows_(id).map((n) => publicRecord_(n.record));
@@ -234,7 +240,7 @@ function saveNumber_(record, row) {
   const duplicateRows = rows_("entries").map((entry, index) => ({ entry, row: index + 2 }))
     .filter((item) => item.row !== targetRow && String(item.entry[0]) === record.rifaId && /^\d+$/.test(String(item.entry[1])) && Number(item.entry[1]) === Number(record.numeroId));
   duplicateRows.reverse().forEach((item) => { sheet.deleteRow(item.row); entries.splice(item.row - 2, 1); });
-  invalidateCache_(`public:${record.rifaId}`);
+  invalidateCache_(`public:v3:${record.rifaId}`);
 }
 function validNumber_(payload, rifa) {
   if (!/^\d{1,6}$/.test(String(payload.numeroId))) fail_("Número inválido.");
@@ -436,7 +442,7 @@ function createRaffleLocked_(p) {
     const quantity = Number(p.cantidad), price = Number(p.precio);
     if (!Number.isInteger(quantity) || quantity < 2 || quantity > 100000 || !Number.isSafeInteger(price) || price < 1 || price > 100000000) fail_("Revisa el precio y la cantidad de números.");
     const rifa = { rifaId: id, titulo: text_(p.titulo, 80), cantidad: quantity, precio: price,
-      premio: text_(p.premio, 120), loteria: text_(p.loteria, 60), fecha: text_(p.fecha, 10),
+      premio: prizeText_(p.premio), loteria: text_(p.loteria, 60), fecha: text_(p.fecha, 10),
       hora: text_(p.hora, 5), responsable: text_(p.responsable, 80), condiciones: text_(p.condiciones, 500) };
     if (!rifa.titulo || !rifa.premio || !rifa.loteria || !rifa.responsable || !/^\d{4}-\d{2}-\d{2}$/.test(rifa.fecha) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(rifa.hora)) fail_("Completa todos los detalles de la rifa.");
     const row = [id, META_NUMBER_ID, "meta", String(quantity), "", new Date().toISOString(),
@@ -458,7 +464,7 @@ function deleteRaffle_(id) {
     }
     const order = orders_().find((o) => o.rifaId === String(id));
     if (order) { const row = rows_("orders")[order.row - 2]; row[2] = "deleted"; row[4] = new Date().toISOString(); table_("orders").getRange(order.row, 1, 1, 8).setValues([row]); }
-    invalidateCache_(`public:${id}`);
+    invalidateCache_(`public:v3:${id}`);
     invalidateCache_("rifapro:catalog:v5");
     return { ok: true };
   });
@@ -466,7 +472,7 @@ function deleteRaffle_(id) {
 function updatePrize_(p) {
   return locked_(() => {
     authorizeRaffle_(p.rifaId);
-    const rifa = raffle_(p.rifaId), premio = text_(p.premio, 120), titulo = text_(p.titulo || rifa.titulo, 80);
+    const rifa = raffle_(p.rifaId), premio = prizeText_(p.premio), titulo = text_(p.titulo || rifa.titulo, 80);
     if (!premio || !titulo) fail_("Escribe el premio y el nombre de la rifa.");
     requestId_(p);
     const entries = rows_("entries");
@@ -588,6 +594,7 @@ function orderCard_(p) {
     const draft = { rifaId: p.rifaId };
     for (const [key, max] of [["titulo",80],["premio",120],["loteria",60],["fecha",10],["hora",5],["responsable",80],["condiciones",500]]) draft[key] = text_(p[key], max);
     draft.cantidad = Number(p.cantidad); draft.precio = Number(p.precio);
+    draft.premio = prizeText_(draft.premio);
     if (!Number.isInteger(draft.cantidad) || draft.cantidad < 2 || draft.cantidad > 100000 || !Number.isSafeInteger(draft.precio) || draft.precio < 1 || draft.precio > 100000000) fail_("Revisa el precio y la cantidad de números.");
     if (!draft.titulo || !draft.premio || !draft.loteria || !draft.responsable || !/^\d{4}-\d{2}-\d{2}$/.test(draft.fecha) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(draft.hora)) fail_("Completa los detalles de la rifa.");
     const draw = Date.parse(draft.fecha + "T00:00:00-05:00");

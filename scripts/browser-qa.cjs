@@ -41,6 +41,8 @@ const fixture = '(' + require('../tests/browser-fixture.cjs').bootstrap.toString
     assert.deepEqual(await evaluate('window.__qa.calls.map(c=>c.action)'),['getSnapshot']);
     assert(await evaluate('document.getElementById("adminSummary").hidden'));
     assert.equal(await evaluate('document.getElementById("kpiRecaudado").textContent'),'');
+    assert(await evaluate(`document.querySelector('[data-number="00"]').classList.contains('apartado')&&document.querySelector('[data-number="01"]').classList.contains('pagado')&&document.querySelector('[data-number="01"] .transfer')&&document.querySelector('[data-number="02"]').classList.contains('pagado')&&document.querySelector('[data-number="02"] .cash')&&!document.getElementById('paidLegend').hidden&&!document.getElementById('transferLegend').hidden`));
+    await screenshot('public-payment-colors');
     assert(await evaluate('document.documentElement.scrollWidth<=innerWidth'));
     await evaluate('window.__stableTile=document.querySelector(".numero");window.__qa.calls=[]');
     await evaluate('refresh()');assert(await evaluate('window.__stableTile===document.querySelector(".numero")'));
@@ -62,7 +64,11 @@ const fixture = '(' + require('../tests/browser-fixture.cjs').bootstrap.toString
     await screenshot('payment-transfer');await click('#saveNumberButton');assert(await evaluate('!document.getElementById("numberDialog").open'));await wait('state.pending.size===0');
     assert((await evaluate('document.getElementById("totalTransfer").textContent')).includes('40.000'));
     await prepare('10','efectivo');await click('#saveNumberButton');await wait('state.pending.size===0');assert((await evaluate('document.getElementById("totalCash").textContent')).includes('40.000'));
-    await click('[data-edit-prize]');await set('#editPremio','$800.000');await evaluate('document.getElementById("editPremio").dispatchEvent(new Event("input"))');
+    await click('[data-edit-prize]');await set('#editPremio','');await evaluate('document.getElementById("editPremio").focus()');
+    for(const digit of '500000')await send('Input.insertText',{text:digit});
+    assert.equal(await evaluate('document.getElementById("editPremio").value'),'$500.000');
+    assert.equal(await evaluate('document.getElementById("prizePreview").textContent'),'$500.000');
+    await set('#editPremio','$800.000');await evaluate('document.getElementById("editPremio").dispatchEvent(new Event("input"))');
     assert.equal(await evaluate('document.getElementById("prizePreview").textContent'),'$800.000');await set('#editTitulo','Rifa de $800.000');await evaluate('window.__qa.delay=700');
     await evaluate('document.getElementById("prizeForm").requestSubmit()');
     assert.equal(await evaluate('document.querySelector(".ticket-prize").textContent'),'$800.000');assert(await evaluate('!document.getElementById("prizeDialog").open && state.pendingRaffles.size===1'));
@@ -129,6 +135,11 @@ const fixture = '(' + require('../tests/browser-fixture.cjs').bootstrap.toString
     assert(!(await evaluate('localStorage.getItem("rifapro.public.v2")')).includes('#acceso='));
     const whatsapp=await evaluate('document.getElementById("paidWhatsApp").href');assert(whatsapp.startsWith('https://wa.me/573246394689?text='));assert(decodeURIComponent(whatsapp).includes('comprobante'));
     await evaluate('window.__copied="";navigator.clipboard.writeText=async text=>{window.__copied=text};document.getElementById("copyPaymentKey").click()');assert.equal(await evaluate('window.__copied'),'3208759798');
+    assert(await evaluate('document.getElementById("toast").classList.contains("clipboard-toast")&&document.querySelector("#toast strong").textContent==="Llave copiada"&&document.getElementById("toast").parentElement.id==="paymentDialog"'));
+    assert.equal(await evaluate('getComputedStyle(document.querySelector(".card-fee")).backgroundColor'),'rgb(20, 108, 67)');
+    await screenshot('payment-key-copied');
+    await click('#copyPrivateLink');await delay(100);
+    assert.equal(await evaluate('document.querySelector("#toast strong").textContent'),'Enlace copiado');
     assert.match(await evaluate('document.getElementById("paymentReference").textContent'),/^RP-\d{5}$/);
     assert(await evaluate('document.getElementById("paymentBrandsImage").complete&&document.getElementById("paymentBrandsImage").naturalWidth>=1000'));
     await click('#downloadPayment');await wait('document.getElementById("qrDialog").open');
@@ -164,6 +175,7 @@ const fixture = '(' + require('../tests/browser-fixture.cjs').bootstrap.toString
     await click('#developerAccessButton');
     await wait('document.getElementById("developerPanel")&&!document.getElementById("developerPanel").hidden');
     assert(await evaluate('document.querySelector(".workspace").hidden&&document.getElementById("ordersPanel").hidden'));
+    assert(await evaluate('document.getElementById("adminButton").hidden&&document.getElementById("developerAccessButton").closest(".brand-title")!==null'));
     await set('#developerPassword','4826');await click('#developerLoginButton');await wait('document.getElementById("developerError").textContent.includes("incorrecta")');
     assert(await evaluate('!hasSession()'));await set('#developerPassword','7462');await click('#developerLoginButton');
     await wait('document.querySelector("[data-approve-card]")!==null');assert(await evaluate('isPlatform()&&!isAdmin()&&document.getElementById("adminSummary").hidden'));

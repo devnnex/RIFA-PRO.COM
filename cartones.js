@@ -20,7 +20,7 @@ function scrollToNumbers() {
 }
 function renderCartones() {
   $("newRaffleButton").hidden = true;
-  $("adminButtonText").textContent = hasSession() ? "Cerrar sesión" : developerPage ? "Desarrollador" : "Administrador";
+  $("adminButtonText").textContent = hasSession() ? "Cerrar sesión" : "Administrador";
   $("adminButton").classList.toggle("organizer-access", !developerPage);
   $("publicCreateButton").hidden = hasSession();
   document.querySelector(".creator-entry").hidden = hasSession();
@@ -87,6 +87,7 @@ async function createPaidCard() {
   if (!validateCreation()) return;
   const pin = $("creatorPin").value;
   if (!/^\d{4}$/.test(pin) || pin !== $("creatorPinConfirm").value) { $("raffleError").textContent = "Escribe el mismo PIN de cuatro dígitos en ambos campos."; return; }
+  formatMoneyField($("premio"));
   const payload = { ...cardDraft, adminPin: pin, contact: $("creatorPhone").value.trim(), ...Object.fromEntries(["titulo", "precio", "cantidad", "premio", "loteria", "fecha", "hora", "responsable", "condiciones"].map((id) => [id, $(id).value.trim()])) };
   payload.precio = amountValue(payload.precio);
   // Keep this recovery link before sending: an uncertain result can be retried safely.
@@ -132,7 +133,12 @@ async function enterOwnerLink(link) {
   if (result.order.status === "active") { state.entryLoading = true; render(); refresh(); } else fillPayment(result.order);
 }
 async function copyText(value, message) {
-  try { await navigator.clipboard.writeText(value); toast(message); }
+  try {
+    await navigator.clipboard.writeText(value); toast(message);
+    const key = value === PAYMENT_KEY;
+    $("toast").classList.add("clipboard-toast");
+    $("toast").innerHTML = '<span class="clipboard-check" aria-hidden="true">✓</span><span><strong>' + (key ? 'Llave copiada' : 'Enlace copiado') + '</strong><small>' + escapeHTML(key ? '320 875 9798 · Lista para pegar en tu app.' : 'Listo para pegar y compartir.') + '</small></span>';
+  }
   catch { notice("Copia estos datos", value); }
 }
 function downloadText(name, text, type = "text/plain;charset=utf-8") {

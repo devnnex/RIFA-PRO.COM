@@ -360,3 +360,23 @@ button,input,label,.button { touch-action: pan-y pinch-zoom; }
   .creation-steps { margin-top: 14px; }
 }
 @media(prefers-reduced-motion:reduce) { .create-step { animation: none; } }
+.brand-title { display: flex; align-items: center; gap: 4px; }
+.brand-home,.brand-name { color: inherit; text-decoration: none; }
+.brand-home { display: flex; flex: none; }
+.brand .verified-access { color: #1689ee; width: 24px; height: 24px; margin: 0; border-radius: 50%; }
+.brand .verified-access:hover,.brand .verified-access:focus-visible { color: #0875d1; background: transparent; }
+.legend-transfer { background: #8652a1; }
+.dark-mode .legend-transfer { background: #bf85de; }
+.number-tools .legend { gap: 10px 14px; }
+.number-tools { flex-wrap: wrap; }
+.number-tools .search-box { margin-left: auto; }
+.card-fee { background: #146c43; color: #fff; box-shadow: 0 7px 22px #146c431a; }
+.dark-mode .card-fee { background: #176e49; color: #fff; }
+.toast.clipboard-toast { display: flex; align-items: center; gap: 12px; min-width: 260px; max-width: calc(100% - 32px); padding: 15px 20px; border: 1px solid #c2e4cf; border-radius: 18px; background: #f3fff6; color: #174f35; text-align: left; box-shadow: 0 12px 45px #153d2829; }
+.clipboard-check { display: grid; place-items: center; width: 34px; height: 34px; flex: none; border-radius: 50%; background: #187046; color: #fff; font-size: 19px; font-weight: 700; }
+.clipboard-toast strong { display: block; font-size: 14px; line-height: 1.4; }
+.clipboard-toast small { display: block; margin-top: 3px; font-size: 11px; line-height: 1.5; color: #42644f; }
+.dark-mode .toast.clipboard-toast { background: #193d2d; color: #e7ffef; border-color: #448a61; box-shadow: 0 12px 45px #0005; }
+.dark-mode .clipboard-toast small { color: #b9e1c7; }
+.numero.pagado.unclassified { background: var(--soft); color: var(--ink); border: 1px dashed var(--line); }
+.numero.pagado.unclassified .number-state { color: var(--muted); }

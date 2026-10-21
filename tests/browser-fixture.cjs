@@ -11,7 +11,7 @@ exports.bootstrap = function () {
   const capabilities = {snapshot:true,editPrize:true,batchNumbers:true,writeSnapshot:true,independentRaffles:true,expiry:true,developerPanel:true,ownerPin:true,pinOnlyLogin:true};
   window.__qa = { calls:[], delay:120, rejectPrize:false, hold:false, releases:[] };
   const records = (id) => data.records[id] ||= [];
-  const publicRecord = (n) => ({numeroId:n.numeroId,estado:n.estado==='libre'?'libre':'apartado',clienteNombre:n.clienteNombre,updatedAt:n.updatedAt});
+  const publicRecord = (n) => ({numeroId:n.numeroId,estado:n.estado,paymentMethod:n.estado==='pagado'?n.paymentMethod||'':'',clienteNombre:n.clienteNombre,updatedAt:n.updatedAt});
   const summary = (id) => {
     const r=catalog.find(r=>r.rifaId===id), list=records(id),paid=list.filter(n=>n.estado==='pagado'),reserved=list.filter(n=>n.estado==='apartado').length;
     return {libres:r.cantidad-paid.length-reserved,apartados:reserved,pagados:paid.length,recaudado:paid.length*r.precio,meta:r.cantidad*r.precio,transferencia:paid.filter(n=>n.paymentMethod==='transferencia').length*r.precio,efectivo:paid.filter(n=>n.paymentMethod==='efectivo').length*r.precio,sinClasificar:0};

@@ -5,6 +5,10 @@ let qrAsset = null;
 let qrAssetReady = null;
 function amountValue(value) { return Number(String(value).replace(/\D/g, "")) || 0; }
 function currencyText(value) { return "$" + new Intl.NumberFormat("es-CO", { maximumFractionDigits: 0 }).format(amountValue(value)); }
+function prizeText(value) {
+  const text = String(value || "").trim();
+  return /^\$?\s*\d[\d.,\s]*$/.test(text) ? currencyText(text) : text.replace(/\$\s*\d[\d.,]*/g, currencyText);
+}
 function formatMoneyField(input) {
   const raw = input.value, caret = input.selectionStart, mode = input.dataset.money;
   const digitsBefore = (raw.slice(0, caret ?? raw.length).match(/\d/g) || []).length;
@@ -54,7 +58,7 @@ function renderExperience() {
   document.documentElement.classList.toggle("shared-link", linked);
   document.body.classList.toggle("participant-view", visitor);
   $("developerAccessButton").hidden = linked;
-  $("adminButton").hidden = visitor;
+  $("adminButton").hidden = visitor || (developerPage && !hasSession());
   $("acquireCardButton").hidden = !visitor;
   document.querySelector(".page-intro").hidden = developerPage || linked;
   document.querySelector(".creator-entry").hidden = hasSession() || linked;

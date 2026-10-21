@@ -1,5 +1,5 @@
 /* Only the application shell is cached. Reservation/admin API responses never are. */
-const CACHE = "rifapro-shell-v2.6.0";
+const CACHE = "rifapro-shell-v2.6.1";
 const ASSETS = ["./", "./index.html", "./style.css", "./premium.css", "./app.js", "./cartones.js", "./experience.js", "./images/breb-nequi.png", "./images/payment-qr.png", "./config.js", "./manifest.json", "./images/logo.svg", "./images/icon-192.png", "./images/icon-512.png", "./images/icon-maskable-512.png", "./images/apple-touch-icon.png"];
 self.addEventListener("install", (event) => { event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(ASSETS.map((asset) => new Request(new URL(asset, self.location.href), { cache: "reload" }))))); self.skipWaiting(); });
 self.addEventListener("activate", (event) => { event.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((key) => key.startsWith("rifapro-shell-") && key !== CACHE).map((key) => caches.delete(key)))).then(() => self.clients.claim())); });

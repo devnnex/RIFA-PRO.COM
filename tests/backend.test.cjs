@@ -66,10 +66,10 @@ test('private read, edits, deletion and creation require a server session', () =
   for (const action of ['adminSnapshot','updateNumber','releaseNumber','deleteRifa','createRaffle','updatePrize','batchNumbers']) assert.equal(s.post(action,reservation()).code,'UNAUTHORIZED');
   assert.equal(s.get('verifyPin').ok,false); assert.equal(s.get('upsertNumber').ok,false);
 });
-test('public snapshot hides phone, actual paid state, payment method and revenue', () => {
+test('public snapshot shows paid cash while hiding phones, totals and write metadata', () => {
   const s = server(), token = s.login(); s.post('updateNumber',reservation({estado:'pagado',paymentMethod:'efectivo',revision:0}),token);
-  const pub = s.get('getRifaNumbers',{rifaId:'test'}); assert.equal(pub.data[0].estado,'apartado');
-  const json = JSON.stringify(pub); for (const secret of ['3001234567','paymentMethod','efectivo','recaudado','revision','requestId']) assert(!json.includes(secret),secret);
+  const pub = s.get('getRifaNumbers',{rifaId:'test'}); assert.equal(pub.data[0].estado,'pagado');assert.equal(pub.data[0].paymentMethod,'efectivo');
+  const json = JSON.stringify(pub); for (const secret of ['3001234567','recaudado','revision','requestId']) assert(!json.includes(secret),secret);
 });
 test('Configured PIN works; incorrect PIN fails; logout revokes access', () => {
   const s = server(); assert.equal(s.post('login',{pin:'9999'}).ok,false); const token = s.login(); assert(token);
@@ -140,10 +140,10 @@ test('original 13-column spreadsheet and __META__ rows remain readable without m
   assert.deepEqual(s.sheets.get('rifas').data[1],legacyMeta);assert.deepEqual(s.sheets.get('rifas').data[2],legacyPaid);
   assert.deepEqual(s.sheets.get('rifas').data[0].slice(0,13),legacyHeaders);
 });
-test('an existing paid number cannot be reserved and its private payment stays private', () => {
+test('an existing paid number stays unavailable and its phone stays private', () => {
   const s=server([legacyHeaders,legacyMeta,legacyPaid]);
   const result=s.post('reserveNumber',reservation({rifaId:'old'}));assert.equal(result.code,'CONFLICT');assert.equal(result.record.clienteNombre,'Ana anterior');
-  const pub=s.get('getRifaNumbers',{rifaId:'old'});assert.equal(pub.data[0].estado,'apartado');assert(!JSON.stringify(pub).includes('3007654321'));
+  const pub=s.get('getRifaNumbers',{rifaId:'old'});assert.equal(pub.data[0].estado,'pagado');assert(!JSON.stringify(pub).includes('3007654321'));
 });
 test('classifying an old paid record preserves the original sheet layout and customer', () => {
   const s=server([legacyHeaders,legacyMeta,legacyPaid]); const token=s.login();
@@ -173,20 +173,20 @@ test('unexpected custom headers cause setup to stop without overwriting customer
   const s=server();s.sheets.get('rifas').data[0][13]='custom';const snapshot=JSON.stringify(s.sheets.get('rifas').data);
   assert.throws(()=>s.ctx.prepararSistema());assert.equal(JSON.stringify(s.sheets.get('rifas').data),snapshot);
 });
-test('one public snapshot includes catalog and availability without financial or contact fields', () => {
+test('one public snapshot includes paid status and method without totals or contact fields', () => {
   const s=server();s.post('updateNumber',reservation({estado:'pagado',paymentMethod:'efectivo',revision:0}),s.login());
-  const snap=s.get('getSnapshot',{rifaId:'test'});assert.equal(snap.rifas[0].rifaId,'test');assert.equal(snap.data[0].estado,'apartado');assert.equal(snap.capabilities.snapshot,true);
-  for(const key of ['paymentMethod','clienteTelefono','summary'])assert(!JSON.stringify(snap).includes(key));
+  const snap=s.get('getSnapshot',{rifaId:'test'});assert.equal(snap.rifas[0].rifaId,'test');assert.equal(snap.data[0].estado,'pagado');assert.equal(snap.data[0].paymentMethod,'efectivo');assert.equal(snap.capabilities.snapshot,true);
+  for(const key of ['clienteTelefono','summary'])assert(!JSON.stringify(snap).includes(key));
 });
 test('an administrator snapshot reads the entries once and opens the database once', () => {
   const s=server(),token=s.login();Object.keys(s.metrics).forEach(key=>s.metrics[key]=0);
   const snap=s.post('adminSnapshot',{rifaId:'test'},token);assert.equal(snap.rifas.length,1);assert.equal(s.metrics.entryReads,1);assert.equal(s.metrics.opens,1);
 });
 test('number write returns confirmed record and summary without a follow-up request', () => {
-  const s=server();s.ctx.SpreadsheetApp.flush=()=>s.cache.set('public:test',JSON.stringify([{numeroId:'07',estado:'libre'}]));
+  const s=server();s.ctx.SpreadsheetApp.flush=()=>s.cache.set('public:v3:test',JSON.stringify([{numeroId:'07',estado:'libre'}]));
   const result=s.post('updateNumber',reservation({estado:'pagado',paymentMethod:'transferencia',revision:0}),s.login());
   assert.equal(result.record.paymentMethod,'transferencia');assert.equal(result.record.revision,1);assert.equal(result.summary.recaudado,20000);
-  assert.equal(s.get('getRifaNumbers',{rifaId:'test'}).data[0].estado,'apartado');
+  assert.equal(s.get('getRifaNumbers',{rifaId:'test'}).data[0].estado,'pagado');
 });
 test('editing the prize keeps participants, payments, price and quantity unchanged', () => {
   const s=server([legacyHeaders,legacyMeta,legacyPaid]),token=s.login();
@@ -266,7 +266,7 @@ test('owners and shared links are isolated from every other card and legacy raff
 test('public card data never includes owner credentials, platform payment contact or financial totals',()=>{
   const s=server(),{p,token}=ordered(s);s.post('approveCard',{rifaId:p.rifaId},s.login());s.post('reserveNumber',reservation({rifaId:p.rifaId}));
   const json=JSON.stringify(s.get('getSnapshot',{rifaId:p.rifaId}));
-  for(const secret of [p.ownerKey,p.contact,'ownerHash','summary','clienteTelefono','paymentMethod'])assert(!json.includes(secret),secret);
+  for(const secret of [p.ownerKey,p.contact,'ownerHash','summary','clienteTelefono'])assert(!json.includes(secret),secret);
   s.post('logout',{sessionToken:token});assert.equal(s.post('ownerStatus',{},token).code,'UNAUTHORIZED');
 });
 test('expiry closes at the end of the second day after the draw in Colombia time',()=>{
@@ -420,4 +420,23 @@ test('short references remain unique and stable through retries, approval and de
   assert.equal(s.post('deleteRifa',{rifaId:a.p.rifaId},dev).ok,true);
   assert.equal(s.post('ownerStatus',{},b.token).order.reference,second);
   assert.equal(s.post('listOrders',{},dev).orders.find(o=>o.rifaId===a.p.rifaId).reference,first);
+});
+test('public colors follow confirmed cash, Nequi, reserved and released states without exposing contacts',()=>{
+  const s=server(),token=s.login();
+  for(const [revision,estado,paymentMethod] of [[0,'pagado','transferencia'],[1,'pagado','efectivo'],[2,'apartado','']]){
+    assert.equal(s.post('updateNumber',reservation({revision,estado,paymentMethod}),token).ok,true);
+    const snap=s.get('getSnapshot',{rifaId:'test'}),record=snap.data[0];assert.equal(record.estado,estado);assert.equal(record.paymentMethod,paymentMethod);
+    assert(!JSON.stringify(record).includes('3001234567'));assert(!('summary' in snap));
+  }
+  s.post('releaseNumber',reservation({revision:3}),token);const record=s.get('getRifaNumbers',{rifaId:'test'}).data[0];
+  assert.equal(record.estado,'libre');assert.equal(record.paymentMethod,'');assert.equal(record.clienteNombre,'');
+});
+test('prize creation and edits preserve full peso amounts and non-cash prizes',()=>{
+  const s=server(),p=card({premio:'500000'}),dev=s.login();assert.equal(s.post('orderCard',p).ok,true);
+  assert.equal(s.post('approveCard',{rifaId:p.rifaId},dev).ok,true);
+  assert.equal(s.get('getSnapshot',{rifaId:p.rifaId}).rifas[0].premio,'$500.000');
+  for(const [revision,premio,expected] of [[0,'800.000','$800.000'],[1,'$1.200.000','$1.200.000'],[2,'Una bicicleta','Una bicicleta']]){
+    const result=s.post('updatePrize',{rifaId:p.rifaId,revision,premio,requestId:crypto.randomUUID()},dev);
+    assert.equal(result.rifa.premio,expected);assert.equal(s.get('getSnapshot',{rifaId:p.rifaId}).rifas[0].premio,expected);
+  }
 });

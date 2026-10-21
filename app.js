@@ -22,7 +22,7 @@ const uuid = () => crypto.randomUUID();
 function normalizeRaffle(raw) {
   return { id: String(raw.id || raw.rifaId), titulo: String(raw.titulo || "Rifa"),
     precio: Number(raw.precio) || 0, cantidad: Math.min(100000, Math.max(2, Number(raw.cantidad) || 100)),
-    premio: String(raw.premio || ""), loteria: String(raw.loteria || ""), fecha: String(raw.fecha || ""),
+    premio: prizeText(raw.premio || ""), loteria: String(raw.loteria || ""), fecha: String(raw.fecha || ""),
     hora: String(raw.hora || ""), responsable: String(raw.responsable || ""), condiciones: String(raw.condiciones || ""), revision: Number(raw.revision) || 0,
     independiente: Boolean(raw.independiente), expiresAt: raw.expiresAt || null, expired: Boolean(raw.expired) };
 }
@@ -46,7 +46,9 @@ function status(message, kind = "online") {
   document.querySelector(".live-label").title = message;
 }
 function toast(message) {
-  clearTimeout(toastTimer); $("toast").textContent = message; $("toast").hidden = false;
+  const host = document.activeElement?.closest("dialog[open]") || [...document.querySelectorAll("dialog[open]")].at(-1) || document.body;
+  if ($("toast").parentElement !== host) host.appendChild($("toast"));
+  clearTimeout(toastTimer); $("toast").classList.remove("clipboard-toast"); $("toast").textContent = message; $("toast").hidden = false;
   toastTimer = setTimeout(() => { $("toast").hidden = true; }, 4500);
 }
 function markup(id, html) {
@@ -177,8 +179,9 @@ async function refresh() {
     const rifa = activeRaffle();
     if (rifa && rifa.id === snapshot.rifaId) {
       state.records = snapshot.data.map((n) => ({ numeroId: String(n.numeroId).padStart(Math.max(2, String(rifa.cantidad - 1).length), "0"),
-        estado: isAdmin() ? n.estado : n.estado === "libre" ? "libre" : "apartado", clienteNombre: String(n.clienteNombre || ""), updatedAt: n.updatedAt,
-        ...(isAdmin() ? { clienteTelefono: n.clienteTelefono, paymentMethod: n.paymentMethod, revision: n.revision } : {}) }));
+        estado: ["libre", "apartado", "pagado"].includes(n.estado) ? n.estado : "apartado", clienteNombre: String(n.clienteNombre || ""), updatedAt: n.updatedAt,
+        paymentMethod: n.estado === "pagado" && ["transferencia", "efectivo"].includes(n.paymentMethod) ? n.paymentMethod : "",
+        ...(isAdmin() ? { clienteTelefono: n.clienteTelefono, revision: n.revision } : {}) }));
       state.summary = isAdmin() ? snapshot.summary : null;
     } else if (!rifa) { state.records = []; state.summary = null; }
     state.online = true; status(state.protocol ? "Actualizado en línea" : "Servidor pendiente de actualizar", state.protocol ? "online" : "error");
@@ -202,7 +205,7 @@ function renderTicket() {
     markup("infoRifa", requested ? '<div class="empty-state"><span class="note-mark" aria-hidden="true">✧</span><h2>Este cartón no está disponible.</h2><p>Comprueba el enlace con la persona responsable. Los cartones nuevos estarán disponibles después de aprobar su pago.</p></div>' : '<div class="empty-state"><span class="note-mark" aria-hidden="true">✧</span><h2>Tu rifa. Tu propio espacio.</h2><p>Crea un cartón por $1.000 COP. Tendrás un enlace para tus participantes y un acceso privado para gestionar números y pagos. Si te invitaron a participar, abre el enlace de esa rifa.</p></div>');
     return;
   }
-  const prize = r.premio || r.titulo;
+  const prize = prizeText(r.premio || r.titulo);
   const digits = Math.max(2, String(r.cantidad - 1).length);
   const editor = isAdmin() ? '<button class="prize-edit" type="button" data-edit-prize><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="m16 3 5 5-12 12-6 1 1-6zM13 6l5 5"/></svg>Editar premio</button>' + (state.pendingRaffles.has(r.id) ? '<span class="ticket-saving">Confirmando…</span>' : '') : '';
   markup("infoRifa", `<div class="ticket-main"><div><p class="eyebrow">${escapeHTML(r.titulo.toUpperCase())}</p><h2 class="ticket-title">RIFA DE</h2><p class="ticket-prize">${escapeHTML(prize)}</p><p class="ticket-subtitle">${r.cantidad === 100 ? 'Juega con las dos (2) últimas cifras' : `Participa con uno de los ${r.cantidad} números`} de la lotería.</p>${editor}</div><div class="ticket-seal" aria-hidden="true"><span>ELIGE TU</span><strong>${digits}</strong><small>${r.cantidad === 100 ? 'ÚLTIMAS CIFRAS' : 'CIFRAS'}</small></div></div><div class="ticket-divider"></div><div class="ticket-details"><div><span class="detail-label">LOTERÍA</span><span class="detail-value">${escapeHTML(r.loteria || "Por confirmar")}</span></div><div><span class="detail-label">FECHA DEL SORTEO</span><span class="detail-value">${escapeHTML(formatDate(r.fecha))}</span></div><div><span class="detail-label">RESPONSABLE</span><span class="detail-value">${escapeHTML(r.responsable || "Por confirmar")}</span></div></div><div class="ticket-bottom"><div><p><strong>Hora límite de pago: ${escapeHTML(formatTime(r.hora))}.</strong><br>${escapeHTML(r.condiciones || "Quien no haya pagado su número a la hora límite del día del sorteo perderá el derecho al premio.")}</p></div><div class="ticket-price"><small>VALOR POR NÚMERO</small><strong>${money(r.precio)}</strong></div></div>`);
@@ -229,13 +232,13 @@ function renderNumbers() {
   for (const tile of grid.querySelectorAll("[data-number]")) {
     const n = tile.dataset.number, operation = state.pending.get(operationKey(r.id, n));
     const record = operation?.optimistic || records.get(Number(n));
-    const occupied = record && record.estado !== "libre", paid = isAdmin() && record?.estado === "pagado";
+    const occupied = record && record.estado !== "libre", paid = record?.estado === "pagado";
     const method = paid && record.paymentMethod;
-    const label = operation ? operation.status === "failed" ? "Por confirmar" : "Confirmando…" : occupied ? record.clienteNombre || (paid ? "Pagado" : "Reservado") : state.online && state.protocol ? "Elegir" : "Sin verificar";
-    const className = ["numero", paid ? "pagado" : occupied ? "apartado" : "libre", operation ? "pending" : "", operation?.status === "failed" ? "failed" : ""].filter(Boolean).join(" ");
+    const label = operation ? operation.status === "failed" ? "Por confirmar" : "Confirmando…" : paid && !method ? "Pagado" : occupied ? record.clienteNombre || (paid ? "Pagado" : "Reservado") : state.online && state.protocol ? "Elegir" : "Sin verificar";
+    const className = ["numero", paid ? "pagado" : occupied ? "apartado" : "libre", paid && !method ? "unclassified" : "", operation ? "pending" : "", operation?.status === "failed" ? "failed" : ""].filter(Boolean).join(" ");
     if (tile.className !== className) tile.className = className;
     const text = tile.querySelector(".number-state"); if (text.textContent !== label) text.textContent = label;
-    const aria = 'Número ' + n + ', ' + (operation ? label : occupied ? 'reservado por ' + (record.clienteNombre || 'un participante') : state.online ? 'libre' : 'sin verificar');
+    const aria = 'Número ' + n + ', ' + (operation ? label : paid ? 'pagado' + (method === 'efectivo' ? ' en efectivo' : method === 'transferencia' ? ' por Nequi' : '') + ' por ' + (record.clienteNombre || 'un participante') : occupied ? 'reservado por ' + (record.clienteNombre || 'un participante') : state.online ? 'libre' : 'sin verificar');
     if (tile.getAttribute("aria-label") !== aria) tile.setAttribute("aria-label", aria);
     tile.setAttribute("aria-busy", String(Boolean(operation && operation.status !== "failed")));
     let badge = tile.querySelector(".tile-payment");
@@ -247,7 +250,8 @@ function renderNumbers() {
 function renderAdmin() {
   const admin = isAdmin();
   document.querySelectorAll(".admin-only").forEach((el) => { el.hidden = !admin; });
-  $("paidLegend").hidden = !admin;
+  $("paidLegend").hidden = false;
+  $("transferLegend").hidden = false;
   $("adminButtonText").textContent = admin ? "Cerrar sesión" : "Administrador";
   const summary = admin ? state.summary : null;
   $("adminSummary").hidden = !summary;
@@ -452,6 +456,7 @@ function openPrizeEditor() {
 }
 function savePrize(event) {
   event.preventDefault(); if (!isAdmin() || !state.prizeDraft) return;
+  formatMoneyField($("editPremio"));
   const before = state.prizeDraft, premio = $("editPremio").value.trim(), titulo = $("editTitulo").value.trim();
   if (!premio || !titulo) return;
   const optimistic = { ...before, premio, titulo }, payload = { rifaId: before.id, premio, titulo, revision: before.revision, requestId: uuid() };
