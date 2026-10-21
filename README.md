@@ -21,16 +21,16 @@ El acceso al resumen privado y las nuevas reservas **requieren desplegar `backen
 
 ## Configurar el servidor
 
-1. En el proyecto de Apps Script del organizador, respalda el código y la hoja anteriores antes de reemplazar código. No elimines hojas existentes.
+1. En el proyecto de Apps Script vinculado a tu hoja original, respalda el código anterior y copia el nuevo `backend/Code.gs` completo. Se conserva la pestaña `rifas`, sus 13 columnas originales y las filas `__META__`.
 2. Copia `backend/Code.gs`. En **Configuración del proyecto → Propiedades de secuencia de comandos**, agrega:
 
    | Propiedad | Valor |
    | --- | --- |
-   | `SPREADSHEET_ID` | ID de la hoja que usará el sistema |
+   | `SPREADSHEET_ID` | Opcional si ejecutas `prepararSistema` desde el proyecto vinculado a la hoja original; esa función guarda su ID automáticamente. Requerido para proyectos independientes. |
    | `ADMIN_PIN` | La contraseña de cuatro dígitos solicitada por el organizador, configurada únicamente en el servidor |
 
-3. Ejecuta `prepararSistema` desde el editor y autoriza el acceso a Sheets. Crea tres pestañas con prefijo `RifaPro_v2_`; no modifica las pestañas anteriores.
-4. Si hay rifas o reservas en el sistema anterior, hay que importarlas a las pestañas v2 antes de cambiar el despliegue. No cambies el servidor en producción sin comprobar esos datos. Este repositorio no incluía el código de Apps Script ni el esquema original; no se ha supuesto una migración destructiva.
+3. Ejecuta `prepararSistema` desde el editor y autoriza el acceso a Sheets. Añade al final cuatro columnas: `paymentMethod`, `revision`, `requestId` y `condiciones`. También crea una pestaña auxiliar `RifaPro_v2_Solicitudes` para evitar duplicar operaciones al reintentar. No mueve ni borra las rifas o reservas anteriores. Si encuentra una cabecera personalizada incompatible, se detiene sin sobrescribirla.
+4. Las rifas y los números existentes se leen directamente desde `rifas`, sin importar datos a otro formato. Los pagos anteriores cuentan en el recaudo y aparecen como **sin medio registrado** hasta que el administrador elija transferencia o efectivo. Los celulares y los estados reales de pago solo se devuelven en consultas autenticadas.
 5. Para publicar la boleta adjunta, revisa y ejecuta explícitamente `crearRifaDeLaBoleta`. Incluye premio **$500.000**, valor **$20.000**, números **00–99**, lotería **Boyacá** y límite de pago **5 p. m.** del **31 de octubre**. El año **2026** se tomó del contexto actual porque no aparece en la boleta; revisa también la transcripción **Arelys B. Mendoza B.** antes de publicarla. Para otras rifas, usa el formulario del administrador.
 6. **Implementar → Administrar implementaciones → Editar → Nueva versión**. Ejecutar como el propietario y permitir acceso a cualquiera. Actualizar la implementación existente conserva su URL `/exec`. Las antiguas acciones de escritura y de lectura privada por GET quedan deshabilitadas en el servidor v2.
 7. Si se genera otra URL, cambia `apiUrl` en `config.js`. No agregues contraseñas ni tokens al cliente.
@@ -69,7 +69,7 @@ npm start
 
 Abre `http://127.0.0.1:4173`. También se admite `http://127.0.0.1:4173/RIFA-PRO.COM/` para comprobar las rutas de GitHub Pages.
 
-`tests/backend.test.cjs` ejecuta 17 pruebas con dobles de Sheets, caché y bloqueo. Verifica ganador único, conflictos, reintentos, aislamiento público, contraseña, cierre de sesión, límites, liberaciones y medios de pago. Estas pruebas verifican la lógica; no sustituyen las pruebas entre clientes contra el despliegue real.
+`tests/backend.test.cjs` ejecuta 26 pruebas con dobles de Sheets, caché y bloqueo. Verifica ganador único, conflictos, reintentos, aislamiento público, contraseña, cierre de sesión, límites, liberaciones, medios de pago y compatibilidad con la hoja original de 13 columnas y sus filas `__META__`, incluidos pagos antiguos, fechas, duplicados y otras rifas. Estas pruebas verifican la lógica; no sustituyen las pruebas entre clientes contra el despliegue real.
 
 `scripts/browser-qa.cjs` verifica la interfaz con Chrome en Windows y datos aislados, sin escribir al servicio real: reserva y conflicto, ingreso correcto e incorrecto, selección obligatoria del medio, subtotales, cierre de sesión, anchos de 320/375/390/768/1024, iconos y carga PWA sin conexión. Las capturas quedan en `.qa/`, que no se publica.
 
