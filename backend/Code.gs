@@ -13,7 +13,8 @@ const SESSION_SECONDS = 1800;
 const CAPABILITIES = { snapshot: true, editPrize: true, batchNumbers: true, writeSnapshot: true };
 let requestContext = null;
 let stagedBatch = null;
-function resetContext_() { requestContext = { db: null, sheets: {}, rows: {} }; }
+function resetContext_() { requestContext = { db: null, sheets: {}, rows: {}, invalidate: new Set() }; }
+function invalidateCache_(key) { requestContext.invalidate.add(key); }
 
 function doGet(event) {
   resetContext_();
@@ -108,7 +109,13 @@ function locked_(fn) {
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(20000)) fail_("Hay varias reservas en curso. Intenta de nuevo en unos segundos.", "BUSY");
   resetContext_();
-  try { const result = fn(); SpreadsheetApp.flush(); return result; }
+  try {
+    const result = fn(); SpreadsheetApp.flush();
+    // Invalidate after Sheets flushes, so a concurrent public read cannot
+    // repopulate a stale cache between the write and its confirmation.
+    const cache = CacheService.getScriptCache(); requestContext.invalidate.forEach((key) => cache.remove(key));
+    return result;
+  }
   finally { lock.releaseLock(); }
 }
 function isoDate_(value) { return value instanceof Date ? value.toISOString() : String(value || ""); }
@@ -195,7 +202,7 @@ function saveNumber_(record, row) {
   const duplicateRows = rows_("entries").map((entry, index) => ({ entry, row: index + 2 }))
     .filter((item) => item.row !== targetRow && String(item.entry[0]) === record.rifaId && /^\d+$/.test(String(item.entry[1])) && Number(item.entry[1]) === Number(record.numeroId));
   duplicateRows.reverse().forEach((item) => { sheet.deleteRow(item.row); entries.splice(item.row - 2, 1); });
-  CacheService.getScriptCache().remove(`public:${record.rifaId}`);
+  invalidateCache_(`public:${record.rifaId}`);
 }
 function validNumber_(payload, rifa) {
   if (!/^\d{1,6}$/.test(String(payload.numeroId))) fail_("Número inválido.");
@@ -355,7 +362,7 @@ function createRaffle_(p) {
       safeCell_(rifa.titulo), price, safeCell_(rifa.premio), safeCell_(rifa.loteria), rifa.fecha, rifa.hora,
       safeCell_(rifa.responsable), "", 0, "", safeCell_(rifa.condiciones)];
     table_("entries").appendRow(row); rows_("entries").push(row);
-    CacheService.getScriptCache().remove("rifapro:catalog:v3");
+    invalidateCache_("rifapro:catalog:v3");
     return { ok: true, rifaId: id, rifa: { ...rifa, revision: 0 } };
   });
 }
@@ -369,8 +376,8 @@ function deleteRaffle_(id) {
       // Bottom-up avoids shifted row indices.
       for (let i = rows.length - 1; i >= 0; i--) if (String(rows[i][0]) === String(id)) { sheet.deleteRow(i + 2); rows.splice(i, 1); }
     }
-    CacheService.getScriptCache().remove(`public:${id}`);
-    CacheService.getScriptCache().remove("rifapro:catalog:v3");
+    invalidateCache_(`public:${id}`);
+    invalidateCache_("rifapro:catalog:v3");
     return { ok: true };
   });
 }
@@ -402,7 +409,7 @@ function updatePrize_(p) {
       const row = [rifa.rifaId, META_NUMBER_ID, "meta", String(rifa.cantidad), "", new Date().toISOString(), safeCell_(titulo), rifa.precio, safeCell_(premio), safeCell_(rifa.loteria), rifa.fecha, rifa.hora, safeCell_(rifa.responsable), "", revision, p.requestId, safeCell_(rifa.condiciones)];
       table_("entries").appendRow(row); entries.push(row);
     }
-    CacheService.getScriptCache().remove("rifapro:catalog:v3");
+    invalidateCache_("rifapro:catalog:v3");
     return { ok: true, rifaId: rifa.rifaId, rifa: { ...rifa, premio, titulo, revision } };
   });
 }

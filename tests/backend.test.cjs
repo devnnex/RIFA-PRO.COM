@@ -182,8 +182,10 @@ test('an administrator snapshot reads the entries once and opens the database on
   const snap=s.post('adminSnapshot',{rifaId:'test'},token);assert.equal(snap.rifas.length,1);assert.equal(s.metrics.entryReads,1);assert.equal(s.metrics.opens,1);
 });
 test('number write returns confirmed record and summary without a follow-up request', () => {
-  const s=server(),result=s.post('updateNumber',reservation({estado:'pagado',paymentMethod:'transferencia',revision:0}),s.login());
+  const s=server();s.ctx.SpreadsheetApp.flush=()=>s.cache.set('public:test',JSON.stringify([{numeroId:'07',estado:'libre'}]));
+  const result=s.post('updateNumber',reservation({estado:'pagado',paymentMethod:'transferencia',revision:0}),s.login());
   assert.equal(result.record.paymentMethod,'transferencia');assert.equal(result.record.revision,1);assert.equal(result.summary.recaudado,20000);
+  assert.equal(s.get('getRifaNumbers',{rifaId:'test'}).data[0].estado,'apartado');
 });
 test('editing the prize keeps participants, payments, price and quantity unchanged', () => {
   const s=server([legacyHeaders,legacyMeta,legacyPaid]),token=s.login();
