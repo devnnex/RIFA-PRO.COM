@@ -9,7 +9,7 @@ const state = { rifas: [], activeId: null, records: [], summary: null, token: nu
   page: 1, selected: null, busy: false, installPrompt: null,
   capabilities: {}, pending: new Map(), pendingRaffles: new Map(), viewCache: new Map(),
   adminQueue: [], adminSending: false, writeEpoch: 0, prizeDraft: null,
-  role: "visitor", ownerOrder: null, numberLabels: new Map() };
+  role: "visitor", ownerOrder: null, numberLabels: new Map(), entryLoading: false };
 let toastTimer;
 const money = (value) => new Intl.NumberFormat("es-CO", { style: "currency", currency: "COP", maximumFractionDigits: 0 }).format(Number(value) || 0);
 const escapeHTML = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
@@ -137,7 +137,7 @@ async function api(action, payload = {}, privateRequest = false) {
 async function refresh() {
   if (developerPage) { if (isPlatform()) await loadOrders(); return; }
   if (state.refreshing || document.hidden) return;
-  if (!navigator.onLine) { state.online = false; status("Sin conexión · solo consulta", "offline"); return; }
+  if (!navigator.onLine) { state.online = false; state.entryLoading = false; status("Sin conexión · solo consulta", "offline"); renderCartones(); return; }
   state.refreshing = true;
   const generation = state.generation, epoch = state.writeEpoch;
   try {
@@ -184,7 +184,7 @@ async function refresh() {
     state.online = true; status(state.protocol ? "Actualizado en línea" : "Servidor pendiente de actualizar", state.protocol ? "online" : "error");
     savePublicCache(); render();
   } catch (error) { if (generation === state.generation) { state.online = false; status("No se pudo actualizar", "error"); } }
-  finally { state.refreshing = false; if (generation !== state.generation) queueMicrotask(refresh); }
+  finally { state.refreshing = false; if (generation === state.generation) { state.entryLoading = false; renderCartones(); } if (generation !== state.generation) queueMicrotask(refresh); }
 }
 function render() { renderList(); renderTicket(); renderNumbers(); renderAdmin(); syncOperations(); if (typeof renderCartones === "function") renderCartones(); }
 function renderList() {
@@ -195,7 +195,7 @@ function renderTicket() {
   const r = activeRaffle();
   if (!r) {
     if (state.role === "owner" && state.ownerOrder && !isAdmin()) {
-      markup("infoRifa", '<div class="empty-state"><span class="note-mark" aria-hidden="true">✧</span><h2>Tu cartón está en camino.</h2><p>Guarda tu enlace privado, realiza el pago y envía el comprobante. Podrás gestionar tu rifa cuando se apruebe la activación.</p></div>');
+      markup("infoRifa", '<div class="empty-state"><span class="note-mark" aria-hidden="true">✧</span><h2>Tu cartón está en camino.</h2><p>Guarda el enlace de tu cartón, realiza el pago y envía el comprobante. Cuando se apruebe, podrás entrar desde Administrador con tu PIN de cuatro dígitos.</p></div>');
       return;
     }
     const requested = new URL(location.href).searchParams.get("rifa");
@@ -396,11 +396,11 @@ async function login(event) {
   if (!state.protocol) { $("adminError").textContent = "El servicio debe actualizarse para habilitar el resumen privado."; return; }
   $("loginButton").disabled = true; $("loginButton").textContent = "Verificando…"; $("adminError").textContent = "";
   try {
-    const result = await api("login", { pin: $("pinInput").value, rifaId: state.activeId });
+    const result = await api("login", { pin: $("pinInput").value, rifaId: state.activeId || new URL(location.href).searchParams.get("rifa") });
     if (!result.token || !result.expiresAt) throw new Error("El servidor no confirmó la sesión.");
     if (result.role !== "owner" || !result.rifaId) throw new Error("El acceso de organizador debe actualizarse antes de continuar.");
     useOwnerSession(result);
-    $("pinInput").value = ""; $("adminDialog").close(); render(); refresh();
+    $("pinInput").value = ""; $("adminDialog").close(); state.entryLoading = true; render(); refresh();
     toast("Sesión de administrador iniciada.");
   } catch (error) { $("adminError").textContent = error.message; }
   finally { $("pinInput").value = ""; $("loginButton").disabled = false; $("loginButton").textContent = "Entrar al resumen →"; }
@@ -411,6 +411,7 @@ function logout(notify = true) {
   for (const [id, operation] of state.pendingRaffles) { state.rifas = state.rifas.filter((r) => r.id !== id); if (operation.before) state.rifas.unshift(operation.before); }
   state.token = null; state.expiresAt = 0; state.role = "visitor"; state.ownerOrder = null; state.summary = null; state.selected = null; state.records = [];
   state.rifas = []; state.activeId = new URL(location.href).searchParams.get("rifa");
+  state.entryLoading = !developerPage && Boolean(state.activeId);
   state.generation++; state.online = false; state.pending.clear(); state.pendingRaffles.clear(); state.adminQueue = []; state.prizeDraft = null;
   for (const id of ["numberDialog", "raffleDialog", "prizeDialog"]) $(id).close();
   $("numberForm").reset(); $("raffleForm").reset(); $("prizeForm").reset(); render(); refresh();
@@ -455,13 +456,10 @@ function savePrize(event) {
   submitOperation({ kind: "raffle", key: before.id, action: "updatePrize", payload, optimistic, before, admin: true });
 }
 async function shareRaffle() {
-  const r = activeRaffle(); if (!r) { toast("Primero selecciona una rifa."); return; }
+  const r = activeRaffle(); if (!isAdmin() || !r) return;
   if (state.pendingRaffles.get(r.id)?.action === "createRaffle") { toast("Estamos confirmando la creación de tu rifa."); return; }
   const url = new URL(location.href); url.search = ""; url.hash = ""; url.searchParams.set("rifa", r.id);
-  try {
-    if (navigator.share) await navigator.share({ title: r.titulo, text: `Participa por ${r.premio}. Elige tu número.`, url: url.href });
-    else { await navigator.clipboard.writeText(url.href); toast("Enlace de la rifa copiado."); }
-  } catch (error) { if (error.name !== "AbortError") notice("Comparte esta rifa", url.href); }
+  await copyText(url.href, "Enlace copiado. Envíalo a tus clientes; entrarán como participantes.");
 }
 function setupPWA() {
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js").catch(() => {});
@@ -479,9 +477,10 @@ function init() {
   const requested = new URL(location.href).searchParams.get("rifa");
   state.rifas = state.rifas.filter((r) => !developerPage && requested && r.id === requested);
   state.activeId = state.rifas.find((r) => r.id === requested)?.id || state.rifas[0]?.id || null;
+  state.entryLoading = !developerPage && Boolean(requested);
   render(); status("Conectando", "loading");
   $("themeToggle").addEventListener("click", () => setTheme(!document.body.classList.contains("dark-mode")));
-  $("adminButton").addEventListener("click", () => { if (hasSession()) logout(); else if (developerPage) $("developerPassword").focus(); else $("ownerAccessButton").click(); });
+  $("adminButton").addEventListener("click", () => { if (hasSession()) logout(); else if (developerPage) $("developerPassword").focus(); else if (activeRaffle() || new URL(location.href).searchParams.get("rifa")) { $("adminError").textContent = ""; $("adminDialog").showModal(); } else $("ownerAccessButton").click(); });
   $("adminForm").addEventListener("submit", login); $("numberForm").addEventListener("submit", saveNumber);
   $("raffleForm").addEventListener("submit", createRaffle); $("releaseNumberButton").addEventListener("click", releaseNumber);
   $("estadoSelect").addEventListener("change", updatePaymentField);
@@ -499,7 +498,7 @@ function init() {
   document.querySelectorAll("[data-close]").forEach((button) => button.addEventListener("click", () => { if (!state.busy) $(button.dataset.close).close(); }));
   $("numberDialog").addEventListener("cancel", (event) => { if (state.busy) event.preventDefault(); });
   $("numberDialog").addEventListener("close", () => { if (!$("numberDialog").open) state.selected = null; });
-  window.addEventListener("offline", () => { state.online = false; status("Sin conexión · solo consulta", "offline"); renderNumbers(); });
+  window.addEventListener("offline", () => { state.online = false; state.entryLoading = false; status("Sin conexión · solo consulta", "offline"); renderNumbers(); renderCartones(); });
   window.addEventListener("online", () => { retryChanges(); refresh(); }); document.addEventListener("visibilitychange", () => { if (!document.hidden) { if (state.token && !hasSession()) logout(); refresh(); } });
   setupPWA(); refresh();
   setInterval(() => { if (state.token && !hasSession()) logout(); refresh(); }, Math.max(3000, CONFIG.pollInterval || 5000));

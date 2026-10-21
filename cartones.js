@@ -13,7 +13,8 @@ function scrollToNumbers() {
 }
 function renderCartones() {
   $("newRaffleButton").hidden = true;
-  $("adminButtonText").textContent = hasSession() ? "Cerrar sesión" : developerPage ? "Desarrollador" : "Mi rifa";
+  $("adminButtonText").textContent = hasSession() ? "Cerrar sesión" : developerPage ? "Desarrollador" : "Administrador";
+  $("adminButton").classList.toggle("organizer-access", !developerPage);
   $("publicCreateButton").hidden = hasSession();
   document.querySelector(".creator-entry").hidden = hasSession();
   $("ownerCard").hidden = !(hasSession() && state.role === "owner" && !state.ownerOrder?.legacy);
@@ -31,12 +32,15 @@ function renderCartones() {
   document.querySelector(".workspace").hidden = developerPage;
   document.querySelector(".page-intro").hidden = developerPage;
   if (developerPage) status(isPlatform() ? "Panel del desarrollador" : "Acceso privado", "online");
-  $("legacyAccessButton").hidden = !activeRaffle() || activeRaffle().independiente || developerPage;
-  $("numeros").hidden = !activeRaffle();
+  $("legacyAccessButton").hidden = !activeRaffle() || developerPage;
+  $("entryLoader").hidden = !state.entryLoading || developerPage;
+  $("numeros").hidden = !activeRaffle() || state.entryLoading;
+  $("infoRifa").hidden = state.entryLoading;
+  $("pinSetupButton").hidden = !isAdmin() || state.ownerOrder?.hasPin !== false || !state.capabilities.ownerPin;
   document.body.classList.toggle("landing-page", !developerPage && !activeRaffle() && !hasSession());
   document.querySelector(".sidebar-heading").hidden = !activeRaffle();
   $("listaRifas").hidden = !activeRaffle();
-  $("shareButton").hidden = !activeRaffle();
+  $("shareButton").hidden = !isAdmin() || !activeRaffle();
   const r = activeRaffle();
   $("expiryNotice").hidden = !r?.expiresAt;
   if (r?.expiresAt) $("expiryNotice").textContent = raffleExpired(r) ? "Cartón vencido · Los registros se conservan para consulta." : "Disponible hasta el " + new Intl.DateTimeFormat("es-CO", { day: "numeric", month: "long", year: "numeric", timeZone: "America/Bogota" }).format(new Date(Date.parse(r.expiresAt) - 1)) + " · Dos días después del sorteo.";
@@ -46,10 +50,11 @@ function renderCartones() {
 }
 function startPaidCard() {
   if (hasSession()) { toast("Cierra tu sesión antes de crear otro cartón independiente."); return; }
-  if (!state.capabilities.independentRaffles) { notice("Estamos habilitando los nuevos cartones", "La creación de nuevos cartones estará disponible cuando el servicio esté listo. Intenta de nuevo más tarde."); return; }
+  if (!state.capabilities.ownerPin) { notice("Estamos habilitando los nuevos cartones", "La creación de nuevos cartones estará disponible cuando el servicio esté listo. Intenta de nuevo más tarde."); return; }
   $("raffleForm").reset(); $("raffleForm").dataset.mode = "paid";
   $("raffleDialogTitle").textContent = "Tu rifa, tu propio espacio.";
   $("creatorFields").hidden = false; $("creatorPhone").required = true;
+  $("creatorPin").required = true; $("creatorPinConfirm").required = true;
   $("createRaffleButton").textContent = "Continuar al pago · $1.000 →";
   $("raffleError").textContent = "";
   if (!cardDraft) cardDraft = { rifaId: uuid(), ownerKey: uuid() + uuid() };
@@ -57,11 +62,12 @@ function startPaidCard() {
 }
 function rafflePublicLink(id) { const url = new URL(location.href); url.search = ""; url.hash = ""; url.searchParams.set("rifa", id); return url; }
 function cardOwnerLink(id, key) { const url = rafflePublicLink(id); url.hash = "acceso=" + key; return url.href; }
+function currentCardLink() { return state.ownerOrder?.hasPin ? rafflePublicLink(state.ownerOrder.rifaId).href : privateCardLink; }
 function fillPayment(order) {
   $("paymentReference").textContent = order.rifaId;
   $("cardPaymentStatus").textContent = paymentLabels[order.status] || "Por confirmar";
-  $("privateAccessLink").value = privateCardLink;
-  $("privateAccessSection").hidden = !privateCardLink;
+  $("privateAccessLink").value = order.hasPin ? rafflePublicLink(order.rifaId).href : privateCardLink;
+  $("privateAccessSection").hidden = !$("privateAccessLink").value;
   $("paidWhatsApp").href = "https://wa.me/" + RECEIPT_PHONE + "?text=" + encodeURIComponent("Hola, te escribo porque ya pagué mi cartón de rifa virtual. Te dejo el comprobante aquí:\n\nCartón: " + order.titulo + "\nReferencia: " + order.rifaId + "\nValor: $1.000 COP.\nAdjuntaré el comprobante en este chat.");
   $("paidWhatsApp").hidden = order.status === "active" || order.status === "deleted";
   $("enterMyCard").hidden = order.status !== "active";
@@ -69,7 +75,9 @@ function fillPayment(order) {
 }
 async function createPaidCard() {
   const button = $("createRaffleButton"); if (button.disabled) return;
-  const payload = { ...cardDraft, contact: $("creatorPhone").value.trim(), ...Object.fromEntries(["titulo", "precio", "cantidad", "premio", "loteria", "fecha", "hora", "responsable", "condiciones"].map((id) => [id, $(id).value.trim()])) };
+  const pin = $("creatorPin").value;
+  if (!/^\d{4}$/.test(pin) || pin !== $("creatorPinConfirm").value) { $("raffleError").textContent = "Escribe el mismo PIN de cuatro dígitos en ambos campos."; return; }
+  const payload = { ...cardDraft, adminPin: pin, contact: $("creatorPhone").value.trim(), ...Object.fromEntries(["titulo", "precio", "cantidad", "premio", "loteria", "fecha", "hora", "responsable", "condiciones"].map((id) => [id, $(id).value.trim()])) };
   // Keep this recovery link before sending: an uncertain result can be retried safely.
   privateCardLink = cardOwnerLink(payload.rifaId, payload.ownerKey);
   try { sessionStorage.setItem("rifapro.cardAccess", privateCardLink); } catch { /* User can download the link. */ }
@@ -77,7 +85,7 @@ async function createPaidCard() {
   try {
     const result = await api("orderCard", payload);
     const session = await api("ownerLogin", { rifaId: payload.rifaId, ownerKey: payload.ownerKey });
-    useOwnerSession(session); $("raffleDialog").close(); fillPayment(result.order); cardDraft = null;
+    useOwnerSession(session); $("raffleDialog").close(); $("creatorPin").value = ""; $("creatorPinConfirm").value = ""; fillPayment(result.order); cardDraft = null;
   } catch (error) { $("raffleError").textContent = error.message + " Puedes reintentar sin crear otro cartón."; }
   finally { button.disabled = false; button.textContent = "Continuar al pago · $1.000 →"; }
 }
@@ -85,6 +93,8 @@ function useOwnerSession(result) {
   if (result.role !== "owner" || !result.rifaId) throw new Error("El servidor no confirmó el acceso a este cartón.");
   state.token = result.token; state.expiresAt = result.expiresAt; state.role = "owner"; state.ownerOrder = result.order;
   state.activeId = result.rifaId; state.rifas = []; state.records = []; state.summary = null;
+  history.replaceState(null, "", rafflePublicLink(result.rifaId).href);
+  state.capabilities = result.capabilities || state.capabilities;
   state.generation++; state.online = true; state.capabilities.independentRaffles = true; state.capabilities.snapshot = true;
   render();
 }
@@ -96,6 +106,7 @@ function clearOwnerAccess() {
   privateCardLink = ""; $("privateAccessLink").value = ""; $("ownerLinkInput").value = "";
   $("paymentDialog").close(); $("ownerLoginDialog").close();
   $("developerPassword").value = "";
+  $("pinInput").value = ""; $("setupPin").value = ""; $("setupPinConfirm").value = ""; $("pinSetupDialog").close();
   try { sessionStorage.removeItem("rifapro.cardAccess"); } catch { /* Optional storage. */ }
 }
 async function enterOwnerLink(link) {
@@ -106,7 +117,7 @@ async function enterOwnerLink(link) {
   privateCardLink = cardOwnerLink(id, key);
   try { sessionStorage.setItem("rifapro.cardAccess", privateCardLink); } catch { /* Optional recovery. */ }
   useOwnerSession(result); $("ownerLoginDialog").close();
-  if (result.order.status === "active") refresh(); else fillPayment(result.order);
+  if (result.order.status === "active") { state.entryLoading = true; render(); refresh(); } else fillPayment(result.order);
 }
 async function copyText(value, message) {
   try { await navigator.clipboard.writeText(value); toast(message); }
@@ -148,6 +159,15 @@ async function loadOrders() {
   finally { ordersLoading = false; $("refreshOrders").disabled = false; }
 }
 function initCartones() {
+  $("pinSetupButton").addEventListener("click", () => { $("pinSetupError").textContent = ""; $("pinSetupDialog").showModal(); });
+  $("pinSetupForm").addEventListener("submit", async (event) => {
+    event.preventDefault(); const pin = $("setupPin").value;
+    if (!/^\d{4}$/.test(pin) || pin !== $("setupPinConfirm").value) { $("pinSetupError").textContent = "Los PIN deben coincidir y tener cuatro dígitos."; return; }
+    $("savePinButton").disabled = true;
+    try { const result = await api("setOwnerPin", { rifaId: state.activeId, pin }, true); state.ownerOrder = result.order; $("pinSetupDialog").close(); $("setupPin").value = ""; $("setupPinConfirm").value = ""; render(); toast("PIN guardado. La próxima vez entra desde Administrador con tus cuatro dígitos."); }
+    catch (error) { $("pinSetupError").textContent = error.message; }
+    finally { $("savePinButton").disabled = false; }
+  });
   $("developerForm").addEventListener("submit", async (event) => {
     event.preventDefault(); $("developerLoginButton").disabled = true; $("developerError").textContent = "";
     const generation = state.generation;
@@ -167,8 +187,8 @@ function initCartones() {
   $("ownerAccessButton").addEventListener("click", () => { $("ownerLoginError").textContent = ""; try { $("ownerLinkInput").value = sessionStorage.getItem("rifapro.cardAccess") || ""; } catch {} $("ownerLoginDialog").showModal(); });
   $("ownerLoginForm").addEventListener("submit", async (event) => { event.preventDefault(); $("ownerLoginButton").disabled = true; try { await enterOwnerLink($("ownerLinkInput").value.trim()); } catch (error) { $("ownerLoginError").textContent = error.message; } finally { $("ownerLoginButton").disabled = false; } });
   $("copyPaymentKey").addEventListener("click", () => copyText(PAYMENT_KEY, "Llave copiada: 320 875 9798"));
-  $("copyPrivateLink").addEventListener("click", () => copyText(privateCardLink, "Enlace privado copiado. Guárdalo solo para ti."));
-  $("downloadPrivateLink").addEventListener("click", () => downloadText("mi-carton-acceso-privado.txt", "RIFA PRO · ACCESO PRIVADO\nNo compartas este enlace con participantes.\n\n" + privateCardLink));
+  $("copyPrivateLink").addEventListener("click", () => copyText(currentCardLink(), state.ownerOrder?.hasPin ? "Enlace del cartón copiado." : "Acceso anterior copiado. Guárdalo solo para ti."));
+  $("downloadPrivateLink").addEventListener("click", () => downloadText("mi-carton-rifa-pro.txt", state.ownerOrder?.hasPin ? "RIFA PRO · MI CARTÓN\nAbre este enlace, pulsa Administrador y escribe tu PIN de 4 dígitos.\nLos participantes pueden abrir el enlace sin iniciar sesión.\n\n" + currentCardLink() : "RIFA PRO · ACCESO PRIVADO ANTERIOR\nNo compartas este enlace con participantes.\n\n" + privateCardLink));
   $("downloadPayment").addEventListener("click", downloadPaymentCard);
   $("paidWhatsApp").addEventListener("click", () => { const token = state.token; api("reportPayment", {}, true).then((r) => { if (state.role === "owner" && state.token === token) { state.ownerOrder = r.order; $("cardPaymentStatus").textContent = paymentLabels[r.order.status]; renderCartones(); } }).catch((error) => toast(error.message)); });
   $("enterMyCard").addEventListener("click", () => { $("paymentDialog").close(); refresh(); scrollToNumbers(); });
