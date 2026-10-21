@@ -8,6 +8,7 @@ const code = fs.readFileSync('backend/Code.gs', 'utf8');
 function server(legacyRows) {
   const sheets = new Map(), properties = new Map([['SPREADSHEET_ID','test'],['ADMIN_PIN','4826']]), cache = new Map();
   let locked = false;
+  const metrics = { entryReads: 0, entryWrites: 0, ledgerWrites: 0, opens: 0 };
   class Sheet {
     constructor() { this.data = []; }
     appendRow(row) { this.data.push([...row]); }
@@ -15,14 +16,14 @@ function server(legacyRows) {
     getLastRow() { return this.data.length; }
     deleteRow(row) { assert(locked); this.data.splice(row - 1, 1); }
     getRange(start, column, count, width) {
-      return { getValues: () => Array.from({length:count},(_,i) => Array.from({length:width},(_,j) => this.data[start-1+i]?.[column-1+j] ?? '')),
-        setNumberFormat() {}, setValues: (values) => { assert(locked, 'writes require the server lock'); values.forEach((r,i) => { this.data[start-1+i] ||= []; r.forEach((v,j) => {this.data[start-1+i][column-1+j]=v;}); }); } };
+      return { getValues: () => { if(this.name==='rifas' && start===2)metrics.entryReads++;return Array.from({length:count},(_,i) => Array.from({length:width},(_,j) => this.data[start-1+i]?.[column-1+j] ?? '')); },
+        setNumberFormat() {}, setValues: (values) => { assert(locked, 'writes require the server lock'); if(this.name==='rifas')metrics.entryWrites++;else metrics.ledgerWrites++;values.forEach((r,i) => { this.data[start-1+i] ||= []; r.forEach((v,j) => {this.data[start-1+i][column-1+j]=v;}); }); } };
     }
   }
-  const db = { getId: () => 'test', getSheetByName: (name) => sheets.get(name), insertSheet: (name) => { const s = new Sheet(); sheets.set(name,s); return s; } };
-  if (legacyRows) { const sheet = new Sheet(); sheet.data = legacyRows.map(row=>[...row]); sheets.set('rifas',sheet); }
+  const db = { getId: () => 'test', getSheetByName: (name) => sheets.get(name), insertSheet: (name) => { const s = new Sheet();s.name=name;sheets.set(name,s); return s; } };
+  if (legacyRows) { const sheet = new Sheet();sheet.name='rifas';sheet.data = legacyRows.map(row=>[...row]); sheets.set('rifas',sheet); }
   const ctx = vm.createContext({ console, Date, JSON, Math, String, Number, Error,
-    SpreadsheetApp: { openById: () => db, getActiveSpreadsheet: () => db, flush() {} },
+    SpreadsheetApp: { openById: () => {metrics.opens++;return db;}, getActiveSpreadsheet: () => db, flush() {} },
     LockService: { getScriptLock: () => ({ tryLock: () => { assert(!locked); locked = true; return true; }, releaseLock: () => { locked = false; } }) },
     PropertiesService: { getScriptProperties: () => ({ getProperty: (key) => properties.get(key), setProperty: (k,v) => properties.set(k,v), deleteProperty: (key) => properties.delete(key) }) },
     CacheService: { getScriptCache: () => ({ get: (key) => cache.get(key), put: (k,v) => cache.set(k,v), remove: (key) => cache.delete(key) }) },
@@ -35,7 +36,7 @@ function server(legacyRows) {
   const post = (action,payload = {}, token) => JSON.parse(ctx.doPost({ postData:{contents:JSON.stringify({action,payload,token})} }).value);
   const get = (action,params = {}) => JSON.parse(ctx.doGet({ parameter:{action,...params} }).value);
   const login = () => post('login',{pin:'4826'}).token;
-  return {ctx,post,get,login,cache,properties,sheets};
+  return {ctx,post,get,login,cache,properties,sheets,metrics};
 }
 function reservation(extra = {}) { return { rifaId:'test',numeroId:'07',clienteNombre:'Ana Pérez',clienteTelefono:'3001234567',requestId:crypto.randomUUID(),...extra }; }
 
@@ -61,7 +62,7 @@ test('public callers cannot spoof paid status or a payment method', () => {
 });
 test('private read, edits, deletion and creation require a server session', () => {
   const s = server();
-  for (const action of ['adminSnapshot','updateNumber','releaseNumber','deleteRifa','createRaffle']) assert.equal(s.post(action,reservation()).code,'UNAUTHORIZED');
+  for (const action of ['adminSnapshot','updateNumber','releaseNumber','deleteRifa','createRaffle','updatePrize','batchNumbers']) assert.equal(s.post(action,reservation()).code,'UNAUTHORIZED');
   assert.equal(s.get('verifyPin').ok,false); assert.equal(s.get('upsertNumber').ok,false);
 });
 test('public snapshot hides phone, actual paid state, payment method and revenue', () => {
@@ -169,4 +170,48 @@ test('editing a duplicated legacy number cleans only its duplicates', () => {
 test('unexpected custom headers cause setup to stop without overwriting customer data', () => {
   const s=server();s.sheets.get('rifas').data[0][13]='custom';const snapshot=JSON.stringify(s.sheets.get('rifas').data);
   assert.throws(()=>s.ctx.prepararSistema());assert.equal(JSON.stringify(s.sheets.get('rifas').data),snapshot);
+});
+test('one public snapshot includes catalog and availability without financial or contact fields', () => {
+  const s=server();s.post('updateNumber',reservation({estado:'pagado',paymentMethod:'efectivo',revision:0}),s.login());
+  const snap=s.get('getSnapshot',{rifaId:'test'});assert.equal(snap.rifas[0].rifaId,'test');assert.equal(snap.data[0].estado,'apartado');assert.equal(snap.capabilities.snapshot,true);
+  for(const key of ['paymentMethod','clienteTelefono','summary'])assert(!JSON.stringify(snap).includes(key));
+});
+test('an administrator snapshot reads the entries once and opens the database once', () => {
+  const s=server(),token=s.login();Object.keys(s.metrics).forEach(key=>s.metrics[key]=0);
+  const snap=s.post('adminSnapshot',{rifaId:'test'},token);assert.equal(snap.rifas.length,1);assert.equal(s.metrics.entryReads,1);assert.equal(s.metrics.opens,1);
+});
+test('number write returns confirmed record and summary without a follow-up request', () => {
+  const s=server(),result=s.post('updateNumber',reservation({estado:'pagado',paymentMethod:'transferencia',revision:0}),s.login());
+  assert.equal(result.record.paymentMethod,'transferencia');assert.equal(result.record.revision,1);assert.equal(result.summary.recaudado,20000);
+});
+test('editing the prize keeps participants, payments, price and quantity unchanged', () => {
+  const s=server([legacyHeaders,legacyMeta,legacyPaid]),token=s.login();
+  const result=s.post('updatePrize',{rifaId:'old',premio:'Una bicicleta',titulo:'Rifa de una bicicleta',revision:0,requestId:crypto.randomUUID()},token);
+  assert.equal(result.ok,true);assert.equal(result.rifa.premio,'Una bicicleta');
+  const snap=s.post('adminSnapshot',{rifaId:'old'},token);assert.equal(snap.data[0].clienteNombre,'Ana anterior');assert.equal(snap.summary.recaudado,20000);assert.equal(snap.rifas[0].precio,20000);assert.equal(snap.rifas[0].cantidad,100);
+  assert.equal(s.get('getSnapshot',{rifaId:'old'}).rifas[0].premio,'Una bicicleta');
+});
+test('prize edits are idempotent, reject stale changes and invalidate cached metadata', () => {
+  const s=server(),token=s.login(),p={rifaId:'test',premio:'$800.000',titulo:'Rifa nueva',revision:0,requestId:crypto.randomUUID()};s.get('getRifas');
+  assert.equal(s.post('updatePrize',p,token).ok,true);assert.equal(s.post('updatePrize',p,token).ok,true);
+  assert.equal(s.post('updatePrize',{...p,requestId:crypto.randomUUID(),premio:'Otro'},token).code,'STALE');
+  assert.equal(s.get('getRifas').data[0].premio,'$800.000');assert.equal(s.get('getRifas').data[0].revision,1);
+});
+test('batch writes group contiguous number rows and the ledger while reading only once', () => {
+  const s=server(),token=s.login();Object.keys(s.metrics).forEach(key=>s.metrics[key]=0);
+  const changes=Array.from({length:10},(_,i)=>({action:'updateNumber',payload:reservation({numeroId:String(i).padStart(2,'0'),estado:'pagado',paymentMethod:i%2?'efectivo':'transferencia',revision:0})}));
+  const result=s.post('batchNumbers',{changes},token);assert.equal(result.results.filter(r=>r.ok).length,10);assert.equal(s.metrics.entryReads,1);assert.equal(s.metrics.entryWrites,1);assert.equal(s.metrics.ledgerWrites,1);
+  const snap=s.post('adminSnapshot',{rifaId:'test'},token);assert.equal(snap.summary.recaudado,200000);assert.equal(snap.summary.transferencia,100000);assert.equal(snap.summary.efectivo,100000);
+  assert.equal(s.post('batchNumbers',{changes},token).results.filter(r=>r.ok).length,10);assert.equal(s.get('getRifaNumbers',{rifaId:'test'}).data.length,10);
+});
+test('batch validation isolates invalid changes and prevents stale overwrites', () => {
+  const s=server(),token=s.login();s.post('reserveNumber',reservation());
+  const result=s.post('batchNumbers',{changes:[{action:'updateNumber',payload:reservation({estado:'pagado',paymentMethod:'efectivo',revision:0})},{action:'updateNumber',payload:reservation({numeroId:'08',estado:'pagado',paymentMethod:'efectivo',revision:0})}]},token);
+  assert.equal(result.results[0].code,'STALE');assert.equal(result.results[1].ok,true);assert.equal(s.post('adminSnapshot',{rifaId:'test'},token).summary.recaudado,20000);
+  assert.equal(s.post('batchNumbers',{changes:[]},token).ok,false);
+});
+test('batch updates retain the cleanup behavior for duplicated legacy rows', () => {
+  const duplicate=[...legacyPaid];duplicate[1]='7';const s=server([legacyHeaders,legacyMeta,legacyPaid,duplicate]);
+  const result=s.post('batchNumbers',{changes:[{action:'updateNumber',payload:reservation({rifaId:'old',estado:'pagado',paymentMethod:'efectivo',revision:0})}]},s.login());
+  assert.equal(result.results[0].ok,true);assert.equal(s.sheets.get('rifas').data.length,3);
 });

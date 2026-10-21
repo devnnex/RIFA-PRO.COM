@@ -12,11 +12,12 @@ El acceso al resumen privado y las nuevas reservas **requieren desplegar `backen
 
 - Los participantes eligen un número libre, ingresan nombre y celular y confirman. La reserva pertenece a la primera solicitud que el servidor acepta dentro de su bloqueo, incluso si llegan dentro del mismo segundo. Abrir el formulario no reserva un número.
 - La otra persona recibe un modal con el nombre de quien lo reservó y la hora registrada por el servidor, con segundos y zona horaria de Colombia.
-- No se confirman operaciones sin respuesta del servidor ni se reenvían reservas desde una cola sin conexión. Cada solicitud tiene un ID para que un reintento no duplique la operación.
+- Cada clic actualiza la vista inmediatamente con la marca **Confirmando**. Las operaciones solo se muestran como confirmadas cuando responde el servidor. Los reintentos conservan su ID y se mantienen únicamente en la memoria de la pestaña, sin almacenar datos de participantes en el dispositivo. Si falla la conexión, **Reintentar** conserva la solicitud original.
 - El servidor valida la contraseña y entrega una sesión de 30 minutos. El token permanece solo en memoria; cerrar sesión o recargar elimina el acceso local. El servidor puede terminar antes una sesión si su caché se elimina.
 - Solo el administrador recibe los KPI, los celulares, los estados de pago y sus medios. La respuesta pública agrupa apartados y pagados como reservados, por lo que no revela el recaudo al inspeccionar la red.
 - Al marcar **Pagado**, se exige escoger **Nequi / transferencia** (violeta, teléfono) o **Efectivo** (verde, billete). El resumen muestra ambos subtotales. Registrar un medio es un registro manual, no una confirmación bancaria ni una integración con Nequi.
 - Las ediciones y liberaciones administrativas usan una revisión para impedir que una pestaña desactualizada sobrescriba cambios de otra.
+- El administrador puede cambiar el premio y el nombre desde **Editar premio**, junto a la boleta. La vista previa cambia al escribir; el guardado conserva números, participantes, precio y pagos. Una revisión impide sobrescribir una edición de otra sesión.
 - El sitio conserva solo los metadatos públicos de las rifas para consulta sin conexión. No guarda teléfonos, medios de pago, totales ni tokens en caché o almacenamiento persistente.
 
 ## Configurar el servidor
@@ -37,6 +38,18 @@ El acceso al resumen privado y las nuevas reservas **requieren desplegar `backen
 8. Prueba desde dos navegadores independientes: el mismo número debe producir una sola reserva y un conflicto. Verifica el ingreso con la contraseña configurada, los pagos de ambos medios y que las consultas públicas no incluyan teléfonos ni recaudo.
 
 El cliente usa JSONP solamente para consultas públicas y POST con cuerpo `text/plain` para autenticación y escrituras. No trata una respuesta opaca `no-cors` como confirmación. Los tiempos de espera piden reintentar la misma solicitud.
+
+## Interacción y rendimiento
+
+La interfaz usa la tipografía del sistema, sin descargar fuentes. En Apple toma la fuente nativa. Los campos tienen al menos 16 px para evitar el zoom automático al enfocarlos en Safari; no se desactiva el zoom manual. Los diálogos móviles se presentan como paneles inferiores y los controles táctiles amplían su superficie.
+
+El nuevo `Code.gs` anuncia sus capacidades. Tras la consulta inicial, una sola petición trae catálogo y números (`getSnapshot`) o catálogo, números y resumen privado (`adminSnapshot`). Las escrituras devuelven el registro confirmado y sus totales, sin exigir dos lecturas posteriores. El servidor reutiliza la conexión a Sheets y la matriz leída dentro de cada solicitud.
+
+Los registros administrativos se pueden seguir editando mientras se guarda el anterior. Los cambios acumulados se envían en lotes de hasta 25 con un bloqueo compartido, lectura única y escrituras de rangos contiguos. Cada resultado se confirma o rechaza por separado. El navegador conserva los botones sin reconstruir toda la cuadrícula en cada actualización, para mantener foco y reducir trabajo.
+
+La respuesta visual es inmediata; la confirmación depende de la red, las cuotas y el tiempo de ejecución de Apps Script. La pantalla nunca convierte un cambio pendiente en una reserva o pago confirmado por anticipado.
+
+**Para activar la edición del premio, las consultas agrupadas y los lotes, aplica este `backend/Code.gs` actualizado y publica otra versión de la misma implementación.** No cambia la estructura respecto a la entrega anterior ni requiere migrar datos o volver a ejecutar `prepararSistema` si ya se ejecutó. Mientras se actualiza el servidor, el cliente sigue usando las operaciones individuales de la versión anterior.
 
 El bloqueo se implementa con [LockService de Apps Script](https://developers.google.com/apps-script/reference/lock/lock-service). Para volúmenes altos, hay que dimensionar el servicio conforme a las cuotas de Apps Script; esta implementación no se ha sometido a una prueba de carga en producción.
 
@@ -69,12 +82,12 @@ npm start
 
 Abre `http://127.0.0.1:4173`. También se admite `http://127.0.0.1:4173/RIFA-PRO.COM/` para comprobar las rutas de GitHub Pages.
 
-`tests/backend.test.cjs` ejecuta 26 pruebas con dobles de Sheets, caché y bloqueo. Verifica ganador único, conflictos, reintentos, aislamiento público, contraseña, cierre de sesión, límites, liberaciones, medios de pago y compatibilidad con la hoja original de 13 columnas y sus filas `__META__`, incluidos pagos antiguos, fechas, duplicados y otras rifas. Estas pruebas verifican la lógica; no sustituyen las pruebas entre clientes contra el despliegue real.
+`tests/backend.test.cjs` ejecuta 34 pruebas con dobles de Sheets, caché y bloqueo. Verifica ganador único, conflictos, reintentos, aislamiento público, contraseña, cierre de sesión, límites, liberaciones, medios de pago, edición del premio, lotes y compatibilidad con la hoja original. También cuenta las lecturas y escrituras para verificar las reducciones de acceso a Sheets. Estas pruebas verifican la lógica; no sustituyen las pruebas entre clientes contra el despliegue real.
 
-`scripts/browser-qa.cjs` verifica la interfaz con Chrome en Windows y datos aislados, sin escribir al servicio real: reserva y conflicto, ingreso correcto e incorrecto, selección obligatoria del medio, subtotales, cierre de sesión, anchos de 320/375/390/768/1024, iconos y carga PWA sin conexión. Las capturas quedan en `.qa/`, que no se publica.
+`scripts/browser-qa.cjs` verifica Chrome con el servicio aislado `tests/browser-fixture.cjs`: mide la respuesta visual antes de recibir confirmación, conserva nodos y foco, comprueba la lectura agrupada, conflictos, medios de pago, premio editable y su restauración si se rechaza, creación, eliminación, lotes y reintentos con el mismo ID. Revisa anchos de 320/375/390/768/1024, campos de 16 px, iconos y PWA sin conexión. Las capturas quedan en `.qa/`, que no se publica. La medición visual de esta prueba no representa la latencia del servidor real.
 
 ## Iconos PWA
 
 `images/logo.svg` contiene una marca vectorial de boleta con los colores de la referencia. Los PNG de 192 y 512 píxeles, el icono maskable de 512 y el de Apple de 180 están incluidos. `scripts/create-icons.ps1` permite regenerarlos con System.Drawing en Windows.
 
-El service worker almacena exclusivamente la interfaz y los iconos. La instalación requiere HTTPS (GitHub Pages) o localhost; las reservas requieren conexión. En iPhone, usa Safari → Compartir → Agregar a inicio.
+El service worker instala la interfaz y los iconos como un conjunto y los sirve desde la caché de esa versión para abrir la PWA sin esperar a la red. Cambia su identificador `CACHE` en cada publicación de recursos. Nunca almacena respuestas del servidor. La instalación requiere HTTPS (GitHub Pages) o localhost; las reservas requieren conexión. En iPhone, usa Safari → Compartir → Agregar a inicio.

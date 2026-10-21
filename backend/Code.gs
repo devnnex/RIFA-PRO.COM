@@ -10,14 +10,25 @@ const TABLES = {
   requests: { name: "RifaPro_v2_Solicitudes", headers: ["requestId", "action", "rifaId", "numeroId", "result"] }
 };
 const SESSION_SECONDS = 1800;
+const CAPABILITIES = { snapshot: true, editPrize: true, batchNumbers: true, writeSnapshot: true };
+let requestContext = null;
+let stagedBatch = null;
+function resetContext_() { requestContext = { db: null, sheets: {}, rows: {} }; }
 
 function doGet(event) {
+  resetContext_();
   const p = event.parameter || {};
   // JSONP is read-only and contains public information only.
   let result;
   try {
-    if (p.action === "health") result = { ok: true, protocol: PROTOCOL, now: new Date().toISOString(), sheet: SHEET_NAME };
-    else if (p.action === "getRifas") result = { ok: true, protocol: PROTOCOL, data: readRaffles_() };
+    if (p.action === "health") result = { ok: true, protocol: PROTOCOL, capabilities: CAPABILITIES, now: new Date().toISOString(), sheet: SHEET_NAME };
+    else if (p.action === "getRifas") result = { ok: true, protocol: PROTOCOL, capabilities: CAPABILITIES, data: publicCatalog_() };
+    else if (p.action === "getSnapshot") {
+      const rifas = publicCatalog_();
+      const rifa = rifas.find((r) => r.rifaId === p.rifaId) || rifas[0];
+      result = { ok: true, protocol: PROTOCOL, capabilities: CAPABILITIES, rifas,
+        rifaId: rifa ? rifa.rifaId : null, data: rifa ? publicSnapshot_(rifa.rifaId) : [] };
+    }
     else if (p.action === "getRifaNumbers") {
       const rifa = raffle_(p.rifaId);
       result = { ok: true, protocol: PROTOCOL, data: publicSnapshot_(rifa.rifaId) };
@@ -28,6 +39,7 @@ function doGet(event) {
   return output_(result, callback);
 }
 function doPost(event) {
+  resetContext_();
   try {
     const request = JSON.parse(event.postData.contents);
     const payload = request.payload || {};
@@ -40,12 +52,16 @@ function doPost(event) {
     if (request.action === "reserveNumber") return output_(reserve_(payload));
     requireAdmin_(request.token);
     if (request.action === "adminSnapshot") {
-      const rifa = raffle_(payload.rifaId);
+      const rifas = readRaffles_();
+      const rifa = rifas.find((r) => r.rifaId === payload.rifaId) || rifas[0];
       // Read once: summary and displayed numbers refer to the same snapshot.
-      const records = numberRows_(rifa.rifaId).map((n) => n.record);
-      return output_({ ok: true, data: records, summary: summary_(rifa, records) });
+      const records = rifa ? numberRows_(rifa.rifaId).map((n) => n.record) : [];
+      return output_({ ok: true, protocol: PROTOCOL, capabilities: CAPABILITIES, rifas,
+        rifaId: rifa ? rifa.rifaId : null, data: records, summary: rifa ? summary_(rifa, records) : null });
     }
     if (request.action === "createRaffle") return output_(createRaffle_(payload));
+    if (request.action === "updatePrize") return output_(updatePrize_(payload));
+    if (request.action === "batchNumbers") return output_(batchNumbers_(payload));
     if (request.action === "updateNumber" || request.action === "releaseNumber") return output_(editNumber_(request.action, payload));
     if (request.action === "deleteRifa") return output_(deleteRaffle_(payload.rifaId));
     return output_({ ok: false, error: "Acción no disponible." });
@@ -57,24 +73,33 @@ function output_(result, callback) {
     .setMimeType(callback ? ContentService.MimeType.JAVASCRIPT : ContentService.MimeType.JSON);
 }
 function failure_(error) {
-  return { ok: false, code: error.code || "INVALID", error: error.safe ? error.message : "No se pudo procesar la solicitud. Revisa el servicio de reservas." };
+  return { ok: false, code: error.code || (error.safe ? "INVALID" : "RETRY"), error: error.safe ? error.message : "No se pudo confirmar la solicitud. Intenta de nuevo con la misma operación." };
 }
 function fail_(message, code) { const error = new Error(message); error.safe = true; error.code = code || "INVALID"; throw error; }
 function db_() {
+  if (!requestContext) resetContext_();
+  if (requestContext.db) return requestContext.db;
   const id = PropertiesService.getScriptProperties().getProperty("SPREADSHEET_ID");
   const db = id ? SpreadsheetApp.openById(id) : SpreadsheetApp.getActiveSpreadsheet();
   if (!db) fail_("Configura SPREADSHEET_ID o ejecuta prepararSistema desde el proyecto vinculado a tu hoja.");
+  requestContext.db = db;
   return db;
 }
 function table_(key) {
+  if (!requestContext) resetContext_();
+  if (requestContext.sheets[key]) return requestContext.sheets[key];
   const sheet = db_().getSheetByName(TABLES[key].name);
   if (!sheet) fail_("El organizador debe ejecutar prepararSistema antes de publicar.");
+  requestContext.sheets[key] = sheet;
   return sheet;
 }
 function rows_(key) {
+  if (!requestContext) resetContext_();
+  if (requestContext.rows[key]) return requestContext.rows[key];
   const sheet = table_(key);
-  if (sheet.getLastRow() < 2) return [];
-  return sheet.getRange(2, 1, sheet.getLastRow() - 1, TABLES[key].headers.length).getValues();
+  const count = sheet.getLastRow() - 1;
+  requestContext.rows[key] = count > 0 ? sheet.getRange(2, 1, count, TABLES[key].headers.length).getValues() : [];
+  return requestContext.rows[key];
 }
 function text_(value, max) { return String(value == null ? "" : value).trim().slice(0, max); }
 function safeCell_(value) { const s = String(value == null ? "" : value); return /^[=+@\-]/.test(s) ? "'" + s : s; }
@@ -82,6 +107,7 @@ function unsheet_(value) { return String(value == null ? "" : value).replace(/^'
 function locked_(fn) {
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(20000)) fail_("Hay varias reservas en curso. Intenta de nuevo en unos segundos.", "BUSY");
+  resetContext_();
   try { const result = fn(); SpreadsheetApp.flush(); return result; }
   finally { lock.releaseLock(); }
 }
@@ -100,20 +126,27 @@ function readRaffles_() {
   return Array.from(groups, ([id, records]) => {
     // Merge nonempty metadata in timestamp order, as the original server did.
     const sorted = records.slice().sort((a, b) => (Date.parse(isoDate_(a[5])) || 0) - (Date.parse(isoDate_(b[5])) || 0));
-    const r = { rifaId: id, titulo: "", precio: 0, premio: "", loteria: "", fecha: "", hora: "", responsable: "", condiciones: "", cantidad: 0 };
+    const r = { rifaId: id, titulo: "", precio: 0, premio: "", loteria: "", fecha: "", hora: "", responsable: "", condiciones: "", cantidad: 0, revision: 0 };
     let maxNumber = -1, metaQuantity = 0;
     sorted.forEach((row) => {
       [["titulo",6],["premio",8],["loteria",9],["responsable",12],["condiciones",16]].forEach(([field,col]) => { if (row[col]) r[field] = unsheet_(row[col]); });
       if (row[7] !== "" && row[7] != null && Number.isFinite(Number(row[7]))) r.precio = Number(row[7]);
       if (row[10]) r.fecha = legacyField_(row[10], "yyyy-MM-dd");
       if (row[11]) r.hora = legacyField_(row[11], "HH:mm");
-      if (String(row[1]) === META_NUMBER_ID) { if (Number(row[3]) > 0) metaQuantity = Number(row[3]); }
+      if (String(row[1]) === META_NUMBER_ID) { if (Number(row[3]) > 0) metaQuantity = Number(row[3]); r.revision = Number(row[14]) || 0; }
       else if (/^\d+$/.test(String(row[1]))) maxNumber = Math.max(maxNumber, Number(row[1]));
     });
     r.cantidad = Math.min(100000, Math.max(metaQuantity, maxNumber + 1, 1));
     if (!metaQuantity && maxNumber < 0) r.cantidad = 100;
     return r;
   });
+}
+function publicCatalog_() {
+  const cache = CacheService.getScriptCache(), key = "rifapro:catalog:v3";
+  const cached = cache.get(key); if (cached) return JSON.parse(cached);
+  const data = readRaffles_(), json = JSON.stringify(data);
+  if (json.length < 80000) cache.put(key, json, 5);
+  return data;
 }
 function raffle_(id) {
   const r = readRaffles_().find((item) => item.rifaId === String(id));
@@ -152,14 +185,16 @@ function saveNumber_(record, row) {
     record.updatedAt, safeCell_(r.titulo), r.precio, safeCell_(r.premio), safeCell_(r.loteria), r.fecha, r.hora,
     safeCell_(r.responsable), record.paymentMethod, record.revision, record.requestId, safeCell_(r.condiciones)];
   const sheet = table_("entries");
-  const targetRow = row || sheet.getLastRow() + 1;
-  const target = sheet.getRange(targetRow, 1, 1, values.length);
-  target.setNumberFormat("@"); target.setValues([values]);
+  const entries = rows_("entries");
+  const targetRow = row || entries.length + 2;
+  if (stagedBatch) stagedBatch.writes.set(targetRow, values);
+  else { const target = sheet.getRange(targetRow, 1, 1, values.length); target.setNumberFormat("@"); target.setValues([values]); }
+  entries[targetRow - 2] = values;
   // Preserve the original server's duplicate cleanup for 01 / 1, without
   // touching any other participant or raffle.
   const duplicateRows = rows_("entries").map((entry, index) => ({ entry, row: index + 2 }))
     .filter((item) => item.row !== targetRow && String(item.entry[0]) === record.rifaId && /^\d+$/.test(String(item.entry[1])) && Number(item.entry[1]) === Number(record.numeroId));
-  duplicateRows.reverse().forEach((item) => sheet.deleteRow(item.row));
+  duplicateRows.reverse().forEach((item) => { sheet.deleteRow(item.row); entries.splice(item.row - 2, 1); });
   CacheService.getScriptCache().remove(`public:${record.rifaId}`);
 }
 function validNumber_(payload, rifa) {
@@ -185,7 +220,11 @@ function oldRequest_(action, p) {
   return JSON.parse(row[4]);
 }
 function remember_(action, p, result) {
-  table_("requests").appendRow([p.requestId, action, p.rifaId, String(p.numeroId), JSON.stringify(result)]);
+  const row = [p.requestId, action, p.rifaId, String(p.numeroId), JSON.stringify(result)];
+  const requests = rows_("requests");
+  if (stagedBatch) stagedBatch.requests.push(row);
+  else table_("requests").appendRow(row);
+  requests.push(row);
   return result;
 }
 function reserve_(p) {
@@ -213,10 +252,16 @@ function reserve_(p) {
   });
 }
 function editNumber_(action, p) {
-  return locked_(() => {
+  return locked_(() => editNumberLocked_(action, p));
+}
+function numberAck_(rifaId, record) {
+  return { ok: true, rifaId, record, summary: summary_(raffle_(rifaId), numberRows_(rifaId).map((n) => n.record)) };
+}
+function editNumberLocked_(action, p) {
     const rifa = raffle_(p.rifaId), number = validNumber_(p, rifa);
-    const previous = oldRequest_(action, p); if (previous) return previous;
+    const previous = oldRequest_(action, p);
     const existing = numberRows_(rifa.rifaId).find((n) => Number(n.record.numeroId) === Number(number));
+    if (previous || existing?.record.requestId === p.requestId) return numberAck_(rifa.rifaId, existing ? existing.record : null);
     if ((existing?.record.revision || 0) !== Number(p.revision)) fail_("Otra sesión actualizó este número. Cierra y vuelve a abrirlo antes de guardar.", "STALE");
     const releasing = action === "releaseNumber";
     const customer = releasing ? { name: "", phone: "" } : validateCustomer_(p);
@@ -228,7 +273,34 @@ function editNumber_(action, p) {
       clienteTelefono: customer.phone, paymentMethod: method, updatedAt: new Date().toISOString(),
       revision: (existing?.record.revision || 0) + 1, requestId: p.requestId };
     saveNumber_(record, existing?.row);
-    return remember_(action, p, { ok: true });
+    return remember_(action, p, numberAck_(rifa.rifaId, record));
+}
+function batchNumbers_(p) {
+  if (!Array.isArray(p.changes) || !p.changes.length || p.changes.length > 25) fail_("Envía entre 1 y 25 cambios por lote.");
+  return locked_(() => {
+    const entries = rows_("entries"), seen = new Set();
+    const duplicate = entries.some((row) => { if (!/^\d+$/.test(String(row[1]))) return false; const key = String(row[0]) + ":" + Number(row[1]); if (seen.has(key)) return true; seen.add(key); return false; });
+    // Existing duplicate rows use the regular cleanup path. Otherwise group new
+    // contiguous rows and the request ledger into range writes.
+    stagedBatch = duplicate ? null : { writes: new Map(), requests: [] };
+    try {
+      const results = p.changes.map((change) => {
+        try {
+          if (!["updateNumber", "releaseNumber"].includes(change.action)) fail_("Acción de lote inválida.");
+          return { requestId: change.payload?.requestId, ...editNumberLocked_(change.action, change.payload || {}) };
+        } catch (error) { return { requestId: change.payload?.requestId, ...failure_(error) }; }
+      });
+      if (stagedBatch) {
+        const writes = Array.from(stagedBatch.writes).sort((a, b) => a[0] - b[0]);
+        for (let i = 0; i < writes.length;) {
+          const first = writes[i][0], values = [writes[i][1]]; i++;
+          while (i < writes.length && writes[i][0] === first + values.length) values.push(writes[i++][1]);
+          const range = table_("entries").getRange(first, 1, values.length, HEADERS.length); range.setNumberFormat("@"); range.setValues(values);
+        }
+        if (stagedBatch.requests.length) table_("requests").getRange(table_("requests").getLastRow() + 1, 1, stagedBatch.requests.length, 5).setValues(stagedBatch.requests);
+      }
+      return { ok: true, results };
+    } finally { stagedBatch = null; }
   });
 }
 function summary_(rifa, records) {
@@ -271,17 +343,20 @@ function createRaffle_(p) {
   return locked_(() => {
     const id = text_(p.rifaId, 80);
     if (!/^[a-zA-Z0-9_-]{1,80}$/.test(id)) fail_("Identificador de rifa inválido.");
-    if (readRaffles_().some((r) => r.rifaId === id)) return { ok: true, rifaId: id };
+    const existing = readRaffles_().find((r) => r.rifaId === id);
+    if (existing) return { ok: true, rifaId: id, rifa: existing };
     const quantity = Number(p.cantidad), price = Number(p.precio);
     if (!Number.isInteger(quantity) || quantity < 2 || quantity > 100000 || !Number.isSafeInteger(price) || price < 1 || price > 100000000) fail_("Revisa el precio y la cantidad de números.");
     const rifa = { rifaId: id, titulo: text_(p.titulo, 80), cantidad: quantity, precio: price,
       premio: text_(p.premio, 120), loteria: text_(p.loteria, 60), fecha: text_(p.fecha, 10),
       hora: text_(p.hora, 5), responsable: text_(p.responsable, 80), condiciones: text_(p.condiciones, 500) };
     if (!rifa.titulo || !rifa.premio || !rifa.loteria || !rifa.responsable || !/^\d{4}-\d{2}-\d{2}$/.test(rifa.fecha) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(rifa.hora)) fail_("Completa todos los detalles de la rifa.");
-    table_("entries").appendRow([id, META_NUMBER_ID, "meta", String(quantity), "", new Date().toISOString(),
+    const row = [id, META_NUMBER_ID, "meta", String(quantity), "", new Date().toISOString(),
       safeCell_(rifa.titulo), price, safeCell_(rifa.premio), safeCell_(rifa.loteria), rifa.fecha, rifa.hora,
-      safeCell_(rifa.responsable), "", "", "", safeCell_(rifa.condiciones)]);
-    return { ok: true, rifaId: id };
+      safeCell_(rifa.responsable), "", 0, "", safeCell_(rifa.condiciones)];
+    table_("entries").appendRow(row); rows_("entries").push(row);
+    CacheService.getScriptCache().remove("rifapro:catalog:v3");
+    return { ok: true, rifaId: id, rifa: { ...rifa, revision: 0 } };
   });
 }
 function deleteRaffle_(id) {
@@ -290,10 +365,43 @@ function deleteRaffle_(id) {
     for (const key of ["entries"]) {
       const rows = rows_(key), sheet = table_(key);
       // Bottom-up avoids shifted row indices.
-      for (let i = rows.length - 1; i >= 0; i--) if (String(rows[i][0]) === String(id)) sheet.deleteRow(i + 2);
+      for (let i = rows.length - 1; i >= 0; i--) if (String(rows[i][0]) === String(id)) { sheet.deleteRow(i + 2); rows.splice(i, 1); }
     }
     CacheService.getScriptCache().remove(`public:${id}`);
+    CacheService.getScriptCache().remove("rifapro:catalog:v3");
     return { ok: true };
+  });
+}
+function updatePrize_(p) {
+  return locked_(() => {
+    const rifa = raffle_(p.rifaId), premio = text_(p.premio, 120), titulo = text_(p.titulo || rifa.titulo, 80);
+    if (!premio || !titulo) fail_("Escribe el premio y el nombre de la rifa.");
+    requestId_(p);
+    const entries = rows_("entries");
+    const metas = entries.map((row, i) => ({ row, index: i })).filter((item) => String(item.row[0]) === rifa.rifaId && String(item.row[1]) === META_NUMBER_ID);
+    const current = metas[metas.length - 1];
+    if (current && String(current.row[15]) === p.requestId) return { ok: true, rifaId: rifa.rifaId, rifa };
+    if (Number(p.revision) !== rifa.revision) fail_("El premio cambió en otra sesión. Actualiza antes de editarlo.", "STALE");
+    const revision = rifa.revision + 1;
+    // Only prize/title fields change on existing records; customer, payment,
+    // original price and number quantity stay intact.
+    const affected = entries.map((row, i) => ({ row, i })).filter((item) => String(item.row[0]) === rifa.rifaId);
+    affected.forEach(({ row, i }) => {
+      row[6] = safeCell_(titulo); row[8] = safeCell_(premio);
+      if (String(row[1]) === META_NUMBER_ID) { row[5] = new Date().toISOString(); row[14] = revision; row[15] = p.requestId; }
+    });
+    for (let i = 0; i < affected.length;) {
+      const first = affected[i].i, values = [affected[i].row.slice(6, 9)]; i++;
+      while (i < affected.length && affected[i].i === first + values.length) values.push(affected[i++].row.slice(6, 9));
+      table_("entries").getRange(first + 2, 7, values.length, 3).setValues(values);
+    }
+    metas.forEach(({ row, index }) => table_("entries").getRange(index + 2, 1, 1, HEADERS.length).setValues([Array.from({ length: HEADERS.length }, (_, i) => row[i] ?? "")]));
+    if (!current) {
+      const row = [rifa.rifaId, META_NUMBER_ID, "meta", String(rifa.cantidad), "", new Date().toISOString(), safeCell_(titulo), rifa.precio, safeCell_(premio), safeCell_(rifa.loteria), rifa.fecha, rifa.hora, safeCell_(rifa.responsable), "", revision, p.requestId, safeCell_(rifa.condiciones)];
+      table_("entries").appendRow(row); entries.push(row);
+    }
+    CacheService.getScriptCache().remove("rifapro:catalog:v3");
+    return { ok: true, rifaId: rifa.rifaId, rifa: { ...rifa, premio, titulo, revision } };
   });
 }
 
