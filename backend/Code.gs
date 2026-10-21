@@ -361,7 +361,9 @@ function createRaffle_(p) {
 }
 function deleteRaffle_(id) {
   return locked_(() => {
-    raffle_(id);
+    if (!String(id || "").trim()) fail_("Selecciona la rifa que quieres eliminar.");
+    // Retrying a deletion after a lost response is a success, not a restore.
+    if (!readRaffles_().some((r) => r.rifaId === String(id))) return { ok: true };
     for (const key of ["entries"]) {
       const rows = rows_(key), sheet = table_(key);
       // Bottom-up avoids shifted row indices.

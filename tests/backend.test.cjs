@@ -115,6 +115,7 @@ test('duplicate raffle creation is idempotent and deletion isolates other raffle
   const s = server(), token = s.login(); assert.equal(s.post('createRaffle',{rifaId:'test'},token).ok,true);
   assert.equal(s.get('getRifas').data.length,1); s.post('reserveNumber',reservation());
   assert.equal(s.post('deleteRifa',{rifaId:'test'},token).ok,true); assert.equal(s.get('getRifas').data.length,0);
+  assert.equal(s.post('deleteRifa',{rifaId:'test'},token).ok,true);
   assert.equal(s.post('reserveNumber',reservation()).code,'NOT_FOUND');
 });
 test('JSONP rejects executable callback names and exposes read actions only', () => {
