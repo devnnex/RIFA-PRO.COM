@@ -19,6 +19,21 @@ El acceso al resumen privado y las nuevas reservas **requieren desplegar `backen
 - Las ediciones y liberaciones administrativas usan una revisión para impedir que una pestaña desactualizada sobrescriba cambios de otra.
 - El administrador puede cambiar el premio y el nombre desde **Editar premio**, junto a la boleta. La vista previa cambia al escribir; el guardado conserva números, participantes, precio y pagos. Una revisión impide sobrescribir una edición de otra sesión.
 - El sitio conserva solo los metadatos públicos de las rifas para consulta sin conexión. No guarda teléfonos, medios de pago, totales ni tokens en caché o almacenamiento persistente.
+- **Elige tu número** pulsa suavemente y lleva directamente al tablero, sin consultas de red. Se respeta la preferencia de movimiento reducido; instalar la PWA sigue disponible en el pie de página.
+
+## Cartones independientes y activación
+
+Cualquier persona puede elegir **Crear mi cartón**. Completa su rifa y celular; el servidor registra una solicitud por **$1.000 COP** y entrega acceso privado mediante un enlace con una clave aleatoria. Cada organizador gestiona únicamente su cartón. Las rifas independientes no aparecen en el catálogo general: el enlace público muestra solo esa rifa.
+
+El creador debe guardar o descargar su enlace privado. La clave se envía mediante POST y el servidor conserva únicamente su hash SHA-256. El enlace se recuerda en `sessionStorage` para recuperarlo en la misma pestaña y se elimina al cerrar sesión. Los tokens de sesión permanecen en memoria. El enlace privado usa el fragmento `#acceso=…`, se retira de la barra al abrirlo y nunca se incluye al compartir con participantes. Quien tenga ese enlace puede administrar el cartón; guárdalo de forma privada. Para volver desde otro dispositivo, abre el enlace guardado o pégalo en **Ya tengo un cartón**.
+
+La pantalla de pago ofrece la llave **3208759798**, Nequi / Bre-B, beneficiario **Elkin Rangel**, copia de llave y descarga PNG de una tarjeta con los datos y la referencia. No genera un QR bancario: la imagen original adjunta en el chat no está disponible como archivo en el repositorio y debe incorporarse como archivo original para preservar su contenido.
+
+**Ya hice mi pago** abre WhatsApp al **+57 3246394689**, con el texto sobre el pago del cartón, su referencia y la indicación de adjuntar el comprobante. La persona adjunta la imagen manualmente. Abrir WhatsApp solo marca la solicitud como pendiente de revisión; no verifica transferencias ni activa el cartón.
+
+Después de verificar el ingreso y el comprobante, el administrador de la plataforma entra con su contraseña habitual, pulsa **Actualizar** en **Activar cartones** y aprueba la referencia correspondiente. Solo entonces se habilitan la administración del organizador y el enlace público. El creador vuelve con su enlace privado; si dejó la app abierta, esta consulta el estado y habilita el acceso al recibir la aprobación. El administrador de plataforma conserva acceso a las rifas anteriores y puede crear rifas propias como antes.
+
+Un cartón vence **al terminar el segundo día calendario después del sorteo, en America/Bogota**. Por ejemplo, un sorteo del 31 de octubre queda disponible hasta el 2 de noviembre a las 23:59:59; cierra el 3 de noviembre a las 00:00. El servidor impide nuevas reservas y ediciones de números o premios después del vencimiento, incluso desde clientes desactualizados. Los registros se conservan para consulta; no se borran automáticamente.
 
 ## Configurar el servidor
 
@@ -30,7 +45,7 @@ El acceso al resumen privado y las nuevas reservas **requieren desplegar `backen
    | `SPREADSHEET_ID` | Opcional si ejecutas `prepararSistema` desde el proyecto vinculado a la hoja original; esa función guarda su ID automáticamente. Requerido para proyectos independientes. |
    | `ADMIN_PIN` | La contraseña de cuatro dígitos solicitada por el organizador, configurada únicamente en el servidor |
 
-3. Ejecuta `prepararSistema` desde el editor y autoriza el acceso a Sheets. Añade al final cuatro columnas: `paymentMethod`, `revision`, `requestId` y `condiciones`. También crea una pestaña auxiliar `RifaPro_v2_Solicitudes` para evitar duplicar operaciones al reintentar. No mueve ni borra las rifas o reservas anteriores. Si encuentra una cabecera personalizada incompatible, se detiene sin sobrescribirla.
+3. Ejecuta `prepararSistema` desde el editor y autoriza el acceso a Sheets. Añade al final cuatro columnas: `paymentMethod`, `revision`, `requestId` y `condiciones`, si faltan. Crea las pestañas auxiliares `RifaPro_v2_Solicitudes` para reintentos y `RifaPro_Cartones` para solicitudes, hashes de acceso y aprobaciones. **Ejecuta esta función de nuevo al actualizar a cartones independientes**, aunque ya la hayas ejecutado en una versión anterior. No mueve ni borra las rifas o reservas anteriores. Si encuentra una cabecera personalizada incompatible, se detiene sin sobrescribirla.
 4. Las rifas y los números existentes se leen directamente desde `rifas`, sin importar datos a otro formato. Los pagos anteriores cuentan en el recaudo y aparecen como **sin medio registrado** hasta que el administrador elija transferencia o efectivo. Los celulares y los estados reales de pago solo se devuelven en consultas autenticadas.
 5. Para publicar la boleta adjunta, revisa y ejecuta explícitamente `crearRifaDeLaBoleta`. Incluye premio **$500.000**, valor **$20.000**, números **00–99**, lotería **Boyacá** y límite de pago **5 p. m.** del **31 de octubre**. El año **2026** se tomó del contexto actual porque no aparece en la boleta; revisa también la transcripción **Arelys B. Mendoza B.** antes de publicarla. Para otras rifas, usa el formulario del administrador.
 6. **Implementar → Administrar implementaciones → Editar → Nueva versión**. Ejecutar como el propietario y permitir acceso a cualquiera. Actualizar la implementación existente conserva su URL `/exec`. Las antiguas acciones de escritura y de lectura privada por GET quedan deshabilitadas en el servidor v2.
@@ -49,7 +64,7 @@ Los registros administrativos se pueden seguir editando mientras se guarda el an
 
 La respuesta visual es inmediata; la confirmación depende de la red, las cuotas y el tiempo de ejecución de Apps Script. La pantalla nunca convierte un cambio pendiente en una reserva o pago confirmado por anticipado.
 
-**Para activar la edición del premio, las consultas agrupadas y los lotes, aplica este `backend/Code.gs` actualizado y publica otra versión de la misma implementación.** No cambia la estructura respecto a la entrega anterior ni requiere migrar datos o volver a ejecutar `prepararSistema` si ya se ejecutó. Mientras se actualiza el servidor, el cliente sigue usando las operaciones individuales de la versión anterior.
+**Para activar los cartones independientes y el vencimiento, copia `backend/Code.gs`, ejecuta `prepararSistema` y publica una nueva versión de la misma implementación.** La creación pública se habilita únicamente cuando el servidor anuncia `independentRaffles`. Mientras actualizas el servidor, las rifas anteriores siguen funcionando con sus operaciones disponibles.
 
 El bloqueo se implementa con [LockService de Apps Script](https://developers.google.com/apps-script/reference/lock/lock-service). Para volúmenes altos, hay que dimensionar el servicio conforme a las cuotas de Apps Script; esta implementación no se ha sometido a una prueba de carga en producción.
 
@@ -82,7 +97,7 @@ npm start
 
 Abre `http://127.0.0.1:4173`. También se admite `http://127.0.0.1:4173/RIFA-PRO.COM/` para comprobar las rutas de GitHub Pages.
 
-`tests/backend.test.cjs` ejecuta 34 pruebas con dobles de Sheets, caché y bloqueo. Verifica ganador único, conflictos, reintentos, aislamiento público, contraseña, cierre de sesión, límites, liberaciones, medios de pago, edición del premio, lotes y compatibilidad con la hoja original. También cuenta las lecturas y escrituras para verificar las reducciones de acceso a Sheets. Estas pruebas verifican la lógica; no sustituyen las pruebas entre clientes contra el despliegue real.
+`tests/backend.test.cjs` ejecuta 42 pruebas con dobles de Sheets, caché y bloqueo. Verifica ganador único, conflictos, reintentos, aislamiento público y entre organizadores, contraseña, cierre de sesión, límites, liberaciones, medios de pago, edición del premio, lotes, aprobación de cartones, vencimiento y compatibilidad con la hoja original. También cuenta lecturas y escrituras. Estas pruebas verifican la lógica; no sustituyen las pruebas entre clientes contra el despliegue real.
 
 `scripts/browser-qa.cjs` verifica Chrome con el servicio aislado `tests/browser-fixture.cjs`: mide la respuesta visual antes de recibir confirmación, conserva nodos y foco, comprueba la lectura agrupada, conflictos, medios de pago, premio editable y su restauración si se rechaza, creación, eliminación, lotes y reintentos con el mismo ID. Revisa anchos de 320/375/390/768/1024, campos de 16 px, iconos y PWA sin conexión. Las capturas quedan en `.qa/`, que no se publica. La medición visual de esta prueba no representa la latencia del servidor real.
 

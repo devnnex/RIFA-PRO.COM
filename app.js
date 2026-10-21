@@ -7,20 +7,25 @@ const state = { rifas: [], activeId: null, records: [], summary: null, token: nu
   expiresAt: 0, protocol: false, online: false, refreshing: false, generation: 0,
   page: 1, selected: null, busy: false, installPrompt: null,
   capabilities: {}, pending: new Map(), pendingRaffles: new Map(), viewCache: new Map(),
-  adminQueue: [], adminSending: false, writeEpoch: 0, prizeDraft: null };
+  adminQueue: [], adminSending: false, writeEpoch: 0, prizeDraft: null,
+  role: "platform", ownerOrder: null, numberLabels: new Map() };
 let toastTimer;
 const money = (value) => new Intl.NumberFormat("es-CO", { style: "currency", currency: "COP", maximumFractionDigits: 0 }).format(Number(value) || 0);
 const escapeHTML = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
 const activeRaffle = () => state.rifas.find((r) => r.id === state.activeId);
-const isAdmin = () => Boolean(state.token && Date.now() < state.expiresAt);
+const hasSession = () => Boolean(state.token && Date.now() < state.expiresAt);
+const isAdmin = () => hasSession() && (state.role === "platform" || state.ownerOrder?.status === "active");
+const isPlatform = () => isAdmin() && state.role === "platform";
 const uuid = () => crypto.randomUUID();
 
 function normalizeRaffle(raw) {
   return { id: String(raw.id || raw.rifaId), titulo: String(raw.titulo || "Rifa"),
     precio: Number(raw.precio) || 0, cantidad: Math.min(100000, Math.max(2, Number(raw.cantidad) || 100)),
     premio: String(raw.premio || ""), loteria: String(raw.loteria || ""), fecha: String(raw.fecha || ""),
-    hora: String(raw.hora || ""), responsable: String(raw.responsable || ""), condiciones: String(raw.condiciones || ""), revision: Number(raw.revision) || 0 };
+    hora: String(raw.hora || ""), responsable: String(raw.responsable || ""), condiciones: String(raw.condiciones || ""), revision: Number(raw.revision) || 0,
+    independiente: Boolean(raw.independiente), expiresAt: raw.expiresAt || null, expired: Boolean(raw.expired) };
 }
+const raffleExpired = (r) => Boolean(r && (r.expired || (r.expiresAt && Date.now() >= Date.parse(r.expiresAt))));
 function formatDate(raw, short = false) {
   const match = String(raw).match(/^(\d{4})-(\d{2})-(\d{2})/);
   const date = match ? new Date(+match[1], +match[2] - 1, +match[3]) : new Date(raw);
@@ -134,15 +139,24 @@ async function refresh() {
   state.refreshing = true;
   const generation = state.generation, epoch = state.writeEpoch;
   try {
+    if (state.role === "owner" && hasSession()) {
+      await refreshOwnerOrder();
+      if (!isAdmin()) { render(); return; }
+    }
     let snapshot, catalog;
-    if (state.capabilities.snapshot) {
-      snapshot = isAdmin() ? await api("adminSnapshot", { rifaId: state.activeId }, true) : await jsonp("getSnapshot", { rifaId: state.activeId || "" });
+    if (!isAdmin() && state.capabilities.snapshot === undefined) {
+      const initial = await jsonp("getSnapshot", { rifaId: state.activeId || new URL(location.href).searchParams.get("rifa") || "" });
+      if (initial.ok && Array.isArray(initial.rifas)) { snapshot = initial; catalog = initial.rifas; }
+      else state.capabilities.snapshot = false;
+    }
+    if (!snapshot && state.capabilities.snapshot) {
+      snapshot = isAdmin() ? await api("adminSnapshot", { rifaId: state.activeId }, true) : await jsonp("getSnapshot", { rifaId: state.activeId || new URL(location.href).searchParams.get("rifa") || "" });
       catalog = snapshot.rifas;
-    } else {
-      const result = await jsonp("getRifas");
+    } else if (!snapshot) {
+      const result = await jsonp("getRifas", { rifaId: new URL(location.href).searchParams.get("rifa") || "" });
       if (!result.ok || !Array.isArray(result.data)) throw new Error("No pudimos consultar las rifas.");
       if (generation !== state.generation || epoch !== state.writeEpoch) return;
-      state.protocol = result.protocol === 2; state.capabilities = result.capabilities || {};
+      state.protocol = result.protocol === 2; state.capabilities = result.capabilities || { snapshot: false };
       catalog = result.data;
       const requested = new URL(location.href).searchParams.get("rifa");
       const selected = catalog.find((r) => String(r.rifaId || r.id) === state.activeId) || catalog.find((r) => String(r.rifaId || r.id) === requested) || catalog[0];
@@ -168,7 +182,7 @@ async function refresh() {
   } catch (error) { if (generation === state.generation) { state.online = false; status("No se pudo actualizar", "error"); } }
   finally { state.refreshing = false; if (generation !== state.generation) queueMicrotask(refresh); }
 }
-function render() { renderList(); renderTicket(); renderNumbers(); renderAdmin(); syncOperations(); }
+function render() { renderList(); renderTicket(); renderNumbers(); renderAdmin(); syncOperations(); if (typeof renderCartones === "function") renderCartones(); }
 function renderList() {
   $("raffleCount").textContent = state.rifas.length;
   markup("listaRifas", state.rifas.length ? state.rifas.map((r) => `<div class="raffle-item ${r.id === state.activeId ? "active" : ""} ${state.pendingRaffles.has(r.id) ? "pending" : ""}"><button class="raffle-select" type="button" data-raffle="${escapeHTML(r.id)}" aria-pressed="${r.id === state.activeId}"><span class="raffle-symbol" aria-hidden="true">✧</span><span><strong>${escapeHTML(r.titulo)}</strong><small>${escapeHTML(formatDate(r.fecha, true))} · ${r.cantidad} números</small></span><span class="arrow" aria-hidden="true">↗</span></button>${isAdmin() ? `<button class="delete-button" type="button" data-delete="${escapeHTML(r.id)}" aria-label="Eliminar ${escapeHTML(r.titulo)}">×</button>` : ""}</div>`).join("") : '<p class="muted">Aún no hay rifas publicadas.</p>');
@@ -176,6 +190,10 @@ function renderList() {
 function renderTicket() {
   const r = activeRaffle();
   if (!r) {
+    if (state.role === "owner" && state.ownerOrder && !isAdmin()) {
+      markup("infoRifa", '<div class="empty-state"><span class="note-mark" aria-hidden="true">✧</span><h2>Tu cartón está en camino.</h2><p>Guarda tu enlace privado, realiza el pago y envía el comprobante. Podrás gestionar tu rifa cuando se apruebe la activación.</p></div>');
+      return;
+    }
     markup("infoRifa", '<div class="empty-state"><span class="note-mark" aria-hidden="true">✧</span><h2>La próxima ilusión está por llegar.</h2><p>Las rifas publicadas aparecerán aquí. El administrador puede crear una nueva desde su espacio.</p></div>');
     return;
   }
@@ -189,7 +207,9 @@ function renderNumbers() {
   const r = activeRaffle(), grid = $("dashboard");
   if (!r) { markup("dashboard", '<p class="empty-state muted">Selecciona una rifa para ver sus números.</p>'); grid.dataset.layout = ""; markup("paginacion", ""); return; }
   const query = $("numberSearch").value.trim(), digits = Math.max(2, String(r.cantidad - 1).length);
-  const all = Array.from({ length: r.cantidad }, (_, i) => String(i).padStart(digits, "0")).filter((n) => !query || n.includes(query));
+  const labelKey = r.cantidad + ":" + digits;
+  if (!state.numberLabels.has(labelKey)) { state.numberLabels.clear(); state.numberLabels.set(labelKey, Array.from({ length: r.cantidad }, (_, i) => String(i).padStart(digits, "0"))); }
+  const labels = state.numberLabels.get(labelKey), all = query ? labels.filter((n) => n.includes(query)) : labels;
   const size = Math.max(20, Math.min(200, CONFIG.pageSize || 100)), pages = Math.ceil(all.length / size);
   state.page = Math.min(Math.max(state.page, 1), Math.max(pages, 1));
   const visible = all.slice((state.page - 1) * size, state.page * size);
@@ -253,6 +273,7 @@ function openNumber(n) {
   if (pending) { if (pending.status === "failed") retryChanges(); else toast("Este número se está confirmando. Puedes elegir otro mientras tanto."); return; }
   if (state.pendingRaffles.get(state.activeId)?.action === "createRaffle") { toast("La rifa se está creando. Podrás registrar números en cuanto se confirme."); return; }
   const r = activeRaffle(); if (!r) return;
+  if (raffleExpired(r)) { notice("Esta rifa ya venció", "El cartón cerró dos días después del sorteo. Sus registros quedan disponibles para consulta."); return; }
   if (!state.protocol) { notice("Estamos preparando las reservas", "El organizador debe actualizar el servicio de reservas. Mientras tanto puedes consultar los detalles de la rifa."); return; }
   if (!state.online || !navigator.onLine) { notice("Conéctate para reservar", "Necesitamos comprobar la disponibilidad en línea. Intenta de nuevo cuando se restablezca la conexión."); refresh(); return; }
   const record = numberRecord(n);
@@ -372,7 +393,7 @@ async function login(event) {
   try {
     const result = await api("login", { pin: $("pinInput").value });
     if (!result.token || !result.expiresAt) throw new Error("El servidor no confirmó la sesión.");
-    state.token = result.token; state.expiresAt = result.expiresAt; state.generation++;
+    state.token = result.token; state.expiresAt = result.expiresAt; state.role = "platform"; state.ownerOrder = null; state.generation++;
     $("pinInput").value = ""; $("adminDialog").close(); render(); refresh();
     toast("Sesión de administrador iniciada.");
   } catch (error) { $("adminError").textContent = error.message; }
@@ -380,8 +401,9 @@ async function login(event) {
 }
 function logout(notify = true) {
   const token = state.token;
+  if (typeof clearOwnerAccess === "function") clearOwnerAccess();
   for (const [id, operation] of state.pendingRaffles) { state.rifas = state.rifas.filter((r) => r.id !== id); if (operation.before) state.rifas.unshift(operation.before); }
-  state.token = null; state.expiresAt = 0; state.summary = null; state.selected = null; state.records = [];
+  state.token = null; state.expiresAt = 0; state.role = "platform"; state.ownerOrder = null; state.summary = null; state.selected = null; state.records = [];
   state.generation++; state.online = false; state.pending.clear(); state.pendingRaffles.clear(); state.adminQueue = []; state.prizeDraft = null;
   for (const id of ["numberDialog", "raffleDialog", "prizeDialog"]) $(id).close();
   $("numberForm").reset(); $("raffleForm").reset(); $("prizeForm").reset(); render(); refresh();
@@ -389,7 +411,9 @@ function logout(notify = true) {
   if (notify) toast("Sesión cerrada. Estás en la vista de participante.");
 }
 function createRaffle(event) {
-  event.preventDefault(); if (!isAdmin()) return;
+  event.preventDefault();
+  if ($("raffleForm").dataset.mode === "paid") { createPaidCard(); return; }
+  if (!isPlatform()) return;
   const payload = Object.fromEntries(["titulo", "precio", "cantidad", "premio", "loteria", "fecha", "hora", "responsable", "condiciones"].map((id) => [id, $(id).value.trim()]));
   $("raffleForm").dataset.requestId ||= uuid(); payload.rifaId = $("raffleForm").dataset.requestId;
   if (state.pendingRaffles.has(payload.rifaId)) return;
@@ -409,6 +433,7 @@ async function deleteRaffle(id) {
 }
 function openPrizeEditor() {
   const rifa = activeRaffle(); if (!isAdmin() || !rifa || state.pendingRaffles.has(rifa.id)) return;
+  if (raffleExpired(rifa)) { toast("Este cartón venció y está disponible para consulta."); return; }
   if (!state.capabilities.editPrize) { notice("La edición está por habilitarse", "Aplica la versión actualizada del servicio para editar el premio de esta rifa."); return; }
   state.prizeDraft = { ...rifa };
   $("editPremio").value = rifa.premio; $("editTitulo").value = rifa.titulo; $("prizePreview").textContent = rifa.premio; $("prizeError").textContent = "";
@@ -445,14 +470,15 @@ function setupPWA() {
 function init() {
   try { const cached = JSON.parse(localStorage.getItem(CACHE_KEY)); if (Array.isArray(cached?.rifas)) state.rifas = cached.rifas.map(normalizeRaffle); setTheme(localStorage.getItem("rifapro.theme") === "dark"); } catch { /* Start clean. */ }
   const requested = new URL(location.href).searchParams.get("rifa");
+  state.rifas = state.rifas.filter((r) => requested ? r.id === requested : !r.independiente);
   state.activeId = state.rifas.find((r) => r.id === requested)?.id || state.rifas[0]?.id || null;
   render(); status("Conectando", "loading");
   $("themeToggle").addEventListener("click", () => setTheme(!document.body.classList.contains("dark-mode")));
-  $("adminButton").addEventListener("click", () => { if (isAdmin()) logout(); else { $("adminError").textContent = ""; $("adminDialog").showModal(); } });
+  $("adminButton").addEventListener("click", () => { if (hasSession()) logout(); else { $("adminError").textContent = ""; $("adminDialog").showModal(); } });
   $("adminForm").addEventListener("submit", login); $("numberForm").addEventListener("submit", saveNumber);
   $("raffleForm").addEventListener("submit", createRaffle); $("releaseNumberButton").addEventListener("click", releaseNumber);
   $("estadoSelect").addEventListener("change", updatePaymentField);
-  $("newRaffleButton").addEventListener("click", () => { $("raffleForm").reset(); delete $("raffleForm").dataset.requestId; $("raffleError").textContent = ""; $("raffleDialog").showModal(); });
+  $("newRaffleButton").addEventListener("click", () => { $("raffleForm").reset(); delete $("raffleForm").dataset.requestId; delete $("raffleForm").dataset.mode; $("creatorFields").hidden = true; $("creatorPhone").required = false; $("createRaffleButton").textContent = "Crear rifa →"; $("raffleError").textContent = ""; $("raffleDialog").showModal(); });
   $("numberSearch").addEventListener("input", () => { state.page = 1; renderNumbers(); });
   $("shareButton").addEventListener("click", shareRaffle);
   $("infoRifa").addEventListener("click", (event) => { if (event.target.closest("[data-edit-prize]")) openPrizeEditor(); });
@@ -467,8 +493,8 @@ function init() {
   $("numberDialog").addEventListener("cancel", (event) => { if (state.busy) event.preventDefault(); });
   $("numberDialog").addEventListener("close", () => { if (!$("numberDialog").open) state.selected = null; });
   window.addEventListener("offline", () => { state.online = false; status("Sin conexión · solo consulta", "offline"); renderNumbers(); });
-  window.addEventListener("online", () => { retryChanges(); refresh(); }); document.addEventListener("visibilitychange", () => { if (!document.hidden) { if (state.token && !isAdmin()) logout(); refresh(); } });
+  window.addEventListener("online", () => { retryChanges(); refresh(); }); document.addEventListener("visibilitychange", () => { if (!document.hidden) { if (state.token && !hasSession()) logout(); refresh(); } });
   setupPWA(); refresh();
-  setInterval(() => { if (state.token && !isAdmin()) logout(); refresh(); }, Math.max(3000, CONFIG.pollInterval || 5000));
+  setInterval(() => { if (state.token && !hasSession()) logout(); refresh(); }, Math.max(3000, CONFIG.pollInterval || 5000));
 }
 document.addEventListener("DOMContentLoaded", init);

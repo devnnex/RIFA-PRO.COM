@@ -35,6 +35,7 @@ const fixture = '(' + require('../tests/browser-fixture.cjs').bootstrap.toString
     await send('Emulation.setDeviceMetricsOverride',{width:1440,height:1100,deviceScaleFactor:1,mobile:false});
     await send('Page.navigate',{url:'http://127.0.0.1:4173/RIFA-PRO.COM/'});
     await wait('document.querySelectorAll(".numero").length===100 && state.online');log('Page ready');
+    assert.deepEqual(await evaluate('window.__qa.calls.map(c=>c.action)'),['getSnapshot']);
     assert(await evaluate('document.getElementById("adminSummary").hidden'));
     assert.equal(await evaluate('document.getElementById("kpiRecaudado").textContent'),'');
     assert(await evaluate('document.documentElement.scrollWidth<=innerWidth'));
@@ -86,6 +87,33 @@ const fixture = '(' + require('../tests/browser-fixture.cjs').bootstrap.toString
     await click('#retryChanges');await wait('document.getElementById("noticeDialog").open');
     const ids=await evaluate('window.__qa.calls.filter(c=>c.action==="reserveNumber").map(c=>c.payload.requestId)');assert.equal(ids.length,2);assert.equal(ids[0],ids[1]);await click('[data-close="noticeDialog"]');
     assert(!(await evaluate('localStorage.getItem("rifapro.public.v2")')).includes('3001234567'));
+    // The main CTA scrolls locally; payment opens WhatsApp but never activates a card.
+    await evaluate('window.__qa.calls=[]');await click('#chooseNumbers');
+    assert.equal(await evaluate('document.activeElement.id'),'numbersTitle');
+    assert.equal(await evaluate('window.__qa.calls.length'),0);
+    await click('#publicCreateButton');
+    for(const [id,value] of [['titulo','Mi rifa independiente'],['premio','Una bicicleta'],['fecha','2099-11-01'],['responsable','Organizador QA'],['creatorPhone','3007654321']])await set('#'+id,value);
+    await click('#createRaffleButton');await wait('document.getElementById("paymentDialog").open');
+    assert(await evaluate('hasSession()&&!isAdmin()&&state.ownerOrder.status==="pending"'));
+    const ownerLink=await evaluate('document.getElementById("privateAccessLink").value');assert(ownerLink.includes('#acceso='));
+    assert(!(await evaluate('localStorage.getItem("rifapro.public.v2")')).includes('#acceso='));
+    const whatsapp=await evaluate('document.getElementById("paidWhatsApp").href');assert(whatsapp.startsWith('https://wa.me/573246394689?text='));assert(decodeURIComponent(whatsapp).includes('comprobante'));
+    await evaluate('window.__copied="";navigator.clipboard.writeText=async text=>{window.__copied=text};document.getElementById("copyPaymentKey").click()');assert.equal(await evaluate('window.__copied'),'3208759798');
+    await evaluate('window.__originalAnchorClick=HTMLAnchorElement.prototype.click;HTMLAnchorElement.prototype.click=function(){window.__download={name:this.download,url:this.href}};document.getElementById("downloadPayment").click();HTMLAnchorElement.prototype.click=window.__originalAnchorClick');
+    assert.equal(await evaluate('window.__download.name'),'pago-carton-rifa-pro.png');assert((await evaluate('window.__download.url')).startsWith('data:image/png'));
+    await screenshot('card-payment-desktop');
+    await send('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:1,mobile:true});await screenshot('card-payment-mobile');
+    assert(await evaluate('document.getElementById("paymentDialog").scrollWidth<=document.getElementById("paymentDialog").clientWidth'));
+    await evaluate('document.getElementById("paidWhatsApp").addEventListener("click",e=>e.preventDefault(),{once:true});document.getElementById("paidWhatsApp").click()');await wait('state.ownerOrder.status==="reviewing"');assert(await evaluate('!isAdmin()'));
+    await click('[data-close="paymentDialog"]');await click('#adminButton');await wait('!hasSession()');
+    await click('#adminButton');await set('#pinInput','4826');await click('#loginButton');await wait('document.querySelector("[data-approve-card]")!==null');
+    await click('[data-approve-card]');await click('#confirmAccept');await wait('document.getElementById("ordersList").textContent.includes("No hay cartones")');
+    await click('#adminButton');await wait('!hasSession()');await click('#ownerAccessButton');await set('#ownerLinkInput',ownerLink);await click('#ownerLoginButton');
+    await wait('isAdmin()&&state.role==="owner"&&!document.getElementById("adminSummary").hidden');
+    assert.equal(await evaluate('state.rifas.length'),1);assert.equal(await evaluate('activeRaffle().titulo'),'Mi rifa independiente');assert(await evaluate('document.getElementById("ordersPanel").hidden'));
+    await click('#shareButton');await delay(150);assert(!(await evaluate('window.__copied')).includes('#acceso='));
+    if(await evaluate('document.getElementById("noticeDialog").open'))await click('[data-close="noticeDialog"]');
+    await click('#adminButton');await wait('!hasSession()&&state.online');
     for(const width of [320,375,390,768,1024]){
       await send('Emulation.setDeviceMetricsOverride',{width,height:844,deviceScaleFactor:1,mobile:width<768});await delay(120);
       assert(await evaluate('document.documentElement.scrollWidth<=innerWidth'),'horizontal overflow at '+width);
@@ -98,8 +126,12 @@ const fixture = '(' + require('../tests/browser-fixture.cjs').bootstrap.toString
     await send('Network.enable');await send('Network.emulateNetworkConditions',{offline:true,latency:0,downloadThroughput:0,uploadThroughput:0});await wait('!navigator.onLine');
     await click('[data-number="12"]');await wait('document.getElementById("noticeDialog").open');assert((await evaluate('document.getElementById("noticeTitle").textContent')).includes('Conéctate'));
     await send('Page.reload');await wait('document.getElementById("dashboard")!==null');assert.equal(await evaluate('document.title'),'Rifa Pro · Tu próximo número de la suerte');
+    await send('Network.emulateNetworkConditions',{offline:false,latency:0,downloadThroughput:-1,uploadThroughput:-1});
+    await send('Page.navigate',{url:'http://127.0.0.1:4173/RIFA-PRO.COM/?legacy=1'});await wait('typeof state!=="undefined"&&state.online&&document.querySelectorAll(".numero").length===100');
+    assert.deepEqual(await evaluate('window.__qa.calls.slice(0,3).map(c=>c.action)'),['getSnapshot','getRifas','getRifaNumbers']);
+    assert(await evaluate('!state.capabilities.independentRaffles'));
     assert.equal(errors.length,0,JSON.stringify(errors));
-    log('PASS: immediate feedback '+instant.ms.toFixed(1)+'ms; stable DOM; single-request refresh; privacy; conflicts; transfer/cash; prize edits and rollback; batch writes; create/delete; retry identity; 320–1024 layouts; 16px inputs; PWA offline.');
+    log('PASS: immediate feedback '+instant.ms.toFixed(1)+'ms; stable DOM; single-request refresh; privacy; conflicts; transfer/cash; prize edits and rollback; batch writes; create/delete; retry identity; scroll CTA; independent cards; payment/key/download; WhatsApp receipt; manual approval; private access; 320–1024 layouts; 16px inputs; PWA offline.');
     console.log('Screenshots saved in .qa/. Fixture backend only; live deployment still needs validation.');
   } finally { if(ws?.readyState===1)ws.close();browser.kill();preview.kill(); }
 })().catch((e)=>{log(e.stack);process.exitCode=1;});

@@ -7,10 +7,13 @@ const HEADERS = ["rifaId", "numeroId", "estado", "clienteNombre", "clienteTelefo
   "paymentMethod", "revision", "requestId", "condiciones"];
 const TABLES = {
   entries: { name: SHEET_NAME, headers: HEADERS },
-  requests: { name: "RifaPro_v2_Solicitudes", headers: ["requestId", "action", "rifaId", "numeroId", "result"] }
+  requests: { name: "RifaPro_v2_Solicitudes", headers: ["requestId", "action", "rifaId", "numeroId", "result"] },
+  orders: { name: "RifaPro_Cartones", headers: ["rifaId", "ownerHash", "estado", "createdAt", "updatedAt", "datos", "contacto", "importe"] }
 };
 const SESSION_SECONDS = 1800;
-const CAPABILITIES = { snapshot: true, editPrize: true, batchNumbers: true, writeSnapshot: true };
+const CAPABILITIES = { snapshot: true, editPrize: true, batchNumbers: true, writeSnapshot: true, independentRaffles: true, expiry: true };
+const CARD_PRICE = 1000;
+let principal = null;
 let requestContext = null;
 let stagedBatch = null;
 function resetContext_() { requestContext = { db: null, sheets: {}, rows: {}, invalidate: new Set() }; }
@@ -23,15 +26,15 @@ function doGet(event) {
   let result;
   try {
     if (p.action === "health") result = { ok: true, protocol: PROTOCOL, capabilities: CAPABILITIES, now: new Date().toISOString(), sheet: SHEET_NAME };
-    else if (p.action === "getRifas") result = { ok: true, protocol: PROTOCOL, capabilities: CAPABILITIES, data: publicCatalog_() };
+    else if (p.action === "getRifas") result = { ok: true, protocol: PROTOCOL, capabilities: CAPABILITIES, data: publicCatalog_(p.rifaId) };
     else if (p.action === "getSnapshot") {
-      const rifas = publicCatalog_();
+      const rifas = publicCatalog_(p.rifaId);
       const rifa = rifas.find((r) => r.rifaId === p.rifaId) || rifas[0];
       result = { ok: true, protocol: PROTOCOL, capabilities: CAPABILITIES, rifas,
         rifaId: rifa ? rifa.rifaId : null, data: rifa ? publicSnapshot_(rifa.rifaId) : [] };
     }
     else if (p.action === "getRifaNumbers") {
-      const rifa = raffle_(p.rifaId);
+      const rifa = publicRaffle_(p.rifaId);
       result = { ok: true, protocol: PROTOCOL, data: publicSnapshot_(rifa.rifaId) };
     } else result = { ok: false, error: "Acción pública no disponible. Actualiza la aplicación." };
   } catch (error) { result = failure_(error); }
@@ -41,30 +44,38 @@ function doGet(event) {
 }
 function doPost(event) {
   resetContext_();
+  principal = null;
   try {
     const request = JSON.parse(event.postData.contents);
     const payload = request.payload || {};
     if (request.action === "login") return output_(login_(payload.pin));
+    if (request.action === "orderCard") return output_(orderCard_(payload));
+    if (request.action === "ownerLogin") return output_(ownerLogin_(payload));
     if (request.action === "logout") {
       const token = String(payload.sessionToken || "");
       if (/^[a-f0-9-]{60,100}$/.test(token)) CacheService.getScriptCache().remove(`session:${token}`);
       return output_({ ok: true });
     }
     if (request.action === "reserveNumber") return output_(reserve_(payload));
-    requireAdmin_(request.token);
+    principal = requireAdmin_(request.token);
+    if (request.action === "ownerStatus") return output_({ ok: true, order: ownerStatus_(principal) });
+    if (request.action === "reportPayment") return output_(reportPayment_(principal));
+    if (request.action === "listOrders") { platformOnly_(); return output_({ ok: true, orders: orders_().map(orderView_) }); }
+    if (request.action === "approveCard") { platformOnly_(); return output_(approveCard_(payload)); }
     if (request.action === "adminSnapshot") {
-      const rifas = readRaffles_();
+      const rifas = readRaffles_().filter((r) => principal.role === "platform" || r.rifaId === principal.rifaId);
+      if (principal.role === "owner") authorizeRaffle_(payload.rifaId || principal.rifaId, false);
       const rifa = rifas.find((r) => r.rifaId === payload.rifaId) || rifas[0];
       // Read once: summary and displayed numbers refer to the same snapshot.
       const records = rifa ? numberRows_(rifa.rifaId).map((n) => n.record) : [];
       return output_({ ok: true, protocol: PROTOCOL, capabilities: CAPABILITIES, rifas,
         rifaId: rifa ? rifa.rifaId : null, data: records, summary: rifa ? summary_(rifa, records) : null });
     }
-    if (request.action === "createRaffle") return output_(createRaffle_(payload));
+    if (request.action === "createRaffle") { platformOnly_(); return output_(createRaffle_(payload)); }
     if (request.action === "updatePrize") return output_(updatePrize_(payload));
     if (request.action === "batchNumbers") return output_(batchNumbers_(payload));
     if (request.action === "updateNumber" || request.action === "releaseNumber") return output_(editNumber_(request.action, payload));
-    if (request.action === "deleteRifa") return output_(deleteRaffle_(payload.rifaId));
+    if (request.action === "deleteRifa") { authorizeRaffle_(payload.rifaId, false); return output_(deleteRaffle_(payload.rifaId)); }
     return output_({ ok: false, error: "Acción no disponible." });
   } catch (error) { return output_(failure_(error)); }
 }
@@ -145,16 +156,32 @@ function readRaffles_() {
     });
     r.cantidad = Math.min(100000, Math.max(metaQuantity, maxNumber + 1, 1));
     if (!metaQuantity && maxNumber < 0) r.cantidad = 100;
+    r.expiresAt = expiry_(r.fecha);
+    r.expired = r.expiresAt ? Date.now() >= Date.parse(r.expiresAt) : false;
     return r;
   });
 }
-function publicCatalog_() {
-  const cache = CacheService.getScriptCache(), key = "rifapro:catalog:v3";
-  const cached = cache.get(key); if (cached) return JSON.parse(cached);
-  const data = readRaffles_(), json = JSON.stringify(data);
-  if (json.length < 80000) cache.put(key, json, 5);
-  return data;
+function publicCatalog_(id) {
+  const cache = CacheService.getScriptCache(), key = "rifapro:catalog:v4";
+  const cached = cache.get(key);
+  let data = cached ? JSON.parse(cached) : null;
+  if (!data) {
+    const orders = orders_();
+    data = readRaffles_().filter((r) => { const order = orders.find((o) => o.rifaId === r.rifaId); return !order || order.status === "active"; })
+      .map((r) => ({ ...r, independiente: orders.some((o) => o.rifaId === r.rifaId) }));
+    const json = JSON.stringify(data); if (json.length < 80000) cache.put(key, json, 5);
+  }
+  // A shared link shows one card. Independent cards never enter the shared directory.
+  return data.filter((r) => id ? r.rifaId === String(id) : !r.independiente).map((r) => ({ ...r, expired: r.expiresAt ? Date.now() >= Date.parse(r.expiresAt) : false }));
 }
+function publicRaffle_(id) { const r = publicCatalog_(id)[0]; if (!r) fail_("Este cartón aún no está activo o ya no está disponible.", "NOT_FOUND"); return r; }
+function expiry_(date) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date))) return null;
+  // Available through the end of the second day after the draw, Colombia time.
+  const time = Date.parse(date + "T00:00:00-05:00");
+  return Number.isFinite(time) ? new Date(time + 3 * 86400000).toISOString() : null;
+}
+function assertOpen_(rifa) { if (rifa.expiresAt && Date.now() >= Date.parse(rifa.expiresAt)) fail_("Esta rifa venció dos días después del sorteo. Sus registros se conservan para consulta.", "EXPIRED"); }
 function raffle_(id) {
   const r = readRaffles_().find((item) => item.rifaId === String(id));
   if (!r) fail_("Esta rifa ya no está disponible.", "NOT_FOUND");
@@ -236,7 +263,8 @@ function remember_(action, p, result) {
 }
 function reserve_(p) {
   return locked_(() => {
-    const rifa = raffle_(p.rifaId), number = validNumber_(p, rifa), customer = validateCustomer_(p);
+    const rifa = publicRaffle_(p.rifaId), number = validNumber_(p, rifa), customer = validateCustomer_(p);
+    assertOpen_(rifa);
     const previous = oldRequest_("reserveNumber", p);
     if (previous) {
       // A retry must not claim success after an administrator released/reassigned it.
@@ -265,6 +293,7 @@ function numberAck_(rifaId, record) {
   return { ok: true, rifaId, record, summary: summary_(raffle_(rifaId), numberRows_(rifaId).map((n) => n.record)) };
 }
 function editNumberLocked_(action, p) {
+    authorizeRaffle_(p.rifaId);
     const rifa = raffle_(p.rifaId), number = validNumber_(p, rifa);
     const previous = oldRequest_(action, p);
     const existing = numberRows_(rifa.rifaId).find((n) => Number(n.record.numeroId) === Number(number));
@@ -338,16 +367,20 @@ function login_(pin) {
     const token = Utilities.getUuid() + Utilities.getUuid();
     const expiresAt = Date.now() + SESSION_SECONDS * 1000;
     CacheService.getScriptCache().put(`session:${token}`, String(expiresAt), SESSION_SECONDS);
-    return { ok: true, token, expiresAt };
+    return { ok: true, token, expiresAt, role: "platform" };
   });
 }
 function requireAdmin_(token) {
   if (!/^[a-f0-9-]{60,100}$/.test(String(token || ""))) fail_("Debes ingresar como administrador.", "UNAUTHORIZED");
-  const expires = Number(CacheService.getScriptCache().get(`session:${token}`));
-  if (!expires || expires <= Date.now()) fail_("Tu sesión terminó. Ingresa de nuevo.", "UNAUTHORIZED");
+  const raw = CacheService.getScriptCache().get(`session:${token}`);
+  const session = raw && raw[0] === "{" ? JSON.parse(raw) : { role: "platform", expiresAt: Number(raw) };
+  if (!session || !session.expiresAt || session.expiresAt <= Date.now()) fail_("Tu sesión terminó. Ingresa de nuevo.", "UNAUTHORIZED");
+  return session;
 }
 function createRaffle_(p) {
-  return locked_(() => {
+  return locked_(() => createRaffleLocked_(p));
+}
+function createRaffleLocked_(p) {
     const id = text_(p.rifaId, 80);
     if (!/^[a-zA-Z0-9_-]{1,80}$/.test(id)) fail_("Identificador de rifa inválido.");
     const existing = readRaffles_().find((r) => r.rifaId === id);
@@ -362,9 +395,8 @@ function createRaffle_(p) {
       safeCell_(rifa.titulo), price, safeCell_(rifa.premio), safeCell_(rifa.loteria), rifa.fecha, rifa.hora,
       safeCell_(rifa.responsable), "", 0, "", safeCell_(rifa.condiciones)];
     table_("entries").appendRow(row); rows_("entries").push(row);
-    invalidateCache_("rifapro:catalog:v3");
+    invalidateCache_("rifapro:catalog:v4");
     return { ok: true, rifaId: id, rifa: { ...rifa, revision: 0 } };
-  });
 }
 function deleteRaffle_(id) {
   return locked_(() => {
@@ -376,13 +408,16 @@ function deleteRaffle_(id) {
       // Bottom-up avoids shifted row indices.
       for (let i = rows.length - 1; i >= 0; i--) if (String(rows[i][0]) === String(id)) { sheet.deleteRow(i + 2); rows.splice(i, 1); }
     }
+    const order = orders_().find((o) => o.rifaId === String(id));
+    if (order) { const row = rows_("orders")[order.row - 2]; row[2] = "deleted"; row[4] = new Date().toISOString(); table_("orders").getRange(order.row, 1, 1, 8).setValues([row]); }
     invalidateCache_(`public:${id}`);
-    invalidateCache_("rifapro:catalog:v3");
+    invalidateCache_("rifapro:catalog:v4");
     return { ok: true };
   });
 }
 function updatePrize_(p) {
   return locked_(() => {
+    authorizeRaffle_(p.rifaId);
     const rifa = raffle_(p.rifaId), premio = text_(p.premio, 120), titulo = text_(p.titulo || rifa.titulo, 80);
     if (!premio || !titulo) fail_("Escribe el premio y el nombre de la rifa.");
     requestId_(p);
@@ -409,8 +444,87 @@ function updatePrize_(p) {
       const row = [rifa.rifaId, META_NUMBER_ID, "meta", String(rifa.cantidad), "", new Date().toISOString(), safeCell_(titulo), rifa.precio, safeCell_(premio), safeCell_(rifa.loteria), rifa.fecha, rifa.hora, safeCell_(rifa.responsable), "", revision, p.requestId, safeCell_(rifa.condiciones)];
       table_("entries").appendRow(row); entries.push(row);
     }
-    invalidateCache_("rifapro:catalog:v3");
+    invalidateCache_("rifapro:catalog:v4");
     return { ok: true, rifaId: rifa.rifaId, rifa: { ...rifa, premio, titulo, revision } };
+  });
+}
+
+function platformOnly_() { if (principal?.role !== "platform") fail_("Esta acción corresponde al administrador de la plataforma.", "FORBIDDEN"); }
+function orders_() {
+  return rows_("orders").map((row, index) => ({ rifaId: String(row[0]), hash: String(row[1]), status: String(row[2]),
+    createdAt: isoDate_(row[3]), updatedAt: isoDate_(row[4]), draft: JSON.parse(row[5]), contact: unsheet_(row[6]), amount: Number(row[7]), row: index + 2 }));
+}
+function orderView_(o) { return { rifaId: o.rifaId, status: o.status, createdAt: o.createdAt, titulo: o.draft.titulo, fecha: o.draft.fecha, contact: o.contact, amount: o.amount, expiresAt: expiry_(o.draft.fecha) }; }
+function secretHash_(secret) {
+  if (!/^[a-f0-9-]{72}$/.test(String(secret || ""))) fail_("La clave privada del cartón no es válida.", "INVALID_KEY");
+  return Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, secret, Utilities.Charset.UTF_8).map((b) => (b & 255).toString(16).padStart(2, "0")).join("");
+}
+function ownerStatus_(actor) {
+  if (actor.role !== "owner") fail_("Ingresa con el enlace privado de tu cartón.", "FORBIDDEN");
+  const order = orders_().find((o) => o.rifaId === actor.rifaId);
+  if (!order) fail_("No encontramos este cartón.", "NOT_FOUND");
+  return orderView_(order);
+}
+function authorizeRaffle_(id, writing = true) {
+  if (!principal) fail_("Ingresa para gestionar tu rifa.", "UNAUTHORIZED");
+  if (principal.role !== "platform") {
+    if (String(id) !== principal.rifaId) fail_("Este cartón pertenece a otro organizador.", "FORBIDDEN");
+    const order = orders_().find((o) => o.rifaId === String(id));
+    if (!order || order.status !== "active") fail_("Tu cartón se activará después de revisar el comprobante de pago.", "PAYMENT_PENDING");
+  }
+  if (writing) assertOpen_(raffle_(id));
+}
+function orderCard_(p) {
+  return locked_(() => {
+    requestId_({ requestId: p.rifaId });
+    const hash = secretHash_(p.ownerKey);
+    const previous = orders_().find((o) => o.rifaId === p.rifaId);
+    if (previous) { if (previous.hash !== hash) fail_("Este identificador ya pertenece a otro cartón.", "CONFLICT"); return { ok: true, order: orderView_(previous) }; }
+    if (readRaffles_().some((r) => r.rifaId === p.rifaId)) fail_("Este identificador ya existe.", "CONFLICT");
+    const contact = text_(p.contact, 30);
+    if (contact.replace(/\D/g, "").length < 10) fail_("Escribe un celular válido para identificar tu comprobante.");
+    const draft = { rifaId: p.rifaId };
+    for (const [key, max] of [["titulo",80],["premio",120],["loteria",60],["fecha",10],["hora",5],["responsable",80],["condiciones",500]]) draft[key] = text_(p[key], max);
+    draft.cantidad = Number(p.cantidad); draft.precio = Number(p.precio);
+    if (!Number.isInteger(draft.cantidad) || draft.cantidad < 2 || draft.cantidad > 100000 || !Number.isSafeInteger(draft.precio) || draft.precio < 1 || draft.precio > 100000000) fail_("Revisa el precio y la cantidad de números.");
+    if (!draft.titulo || !draft.premio || !draft.loteria || !draft.responsable || !/^\d{4}-\d{2}-\d{2}$/.test(draft.fecha) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(draft.hora)) fail_("Completa los detalles de la rifa.");
+    const draw = Date.parse(draft.fecha + "T00:00:00-05:00");
+    if (!Number.isFinite(draw) || new Date(draw).toISOString().slice(0, 10) !== draft.fecha) fail_("La fecha del sorteo no es válida.");
+    assertOpen_({ expiresAt: expiry_(draft.fecha) });
+    const now = new Date().toISOString(), row = [p.rifaId, hash, "pending", now, now, JSON.stringify(draft), safeCell_(contact), CARD_PRICE];
+    table_("orders").appendRow(row); rows_("orders").push(row);
+    return { ok: true, order: orderView_(orders_().find((o) => o.rifaId === p.rifaId)) };
+  });
+}
+function ownerLogin_(p) {
+  const hash = secretHash_(p.ownerKey), order = orders_().find((o) => o.rifaId === String(p.rifaId) && o.hash === hash);
+  if (!order) fail_("El enlace o la clave privada no corresponden a este cartón.", "INVALID_KEY");
+  const token = Utilities.getUuid() + Utilities.getUuid(), expiresAt = Date.now() + SESSION_SECONDS * 1000;
+  CacheService.getScriptCache().put(`session:${token}`, JSON.stringify({ role: "owner", rifaId: order.rifaId, expiresAt }), SESSION_SECONDS);
+  return { ok: true, token, expiresAt, role: "owner", rifaId: order.rifaId, order: orderView_(order) };
+}
+function reportPayment_(actor) {
+  if (actor.role !== "owner") fail_("Ingresa con el enlace privado de tu cartón.", "FORBIDDEN");
+  return locked_(() => {
+    const order = orders_().find((o) => o.rifaId === actor.rifaId);
+    if (!order) fail_("No encontramos este cartón.");
+    if (order.status === "pending") { const row = rows_("orders")[order.row - 2]; row[2] = "reviewing"; row[4] = new Date().toISOString(); table_("orders").getRange(order.row, 1, 1, 8).setValues([row]); }
+    return { ok: true, order: orderView_(orders_().find((o) => o.rifaId === actor.rifaId)) };
+  });
+}
+function approveCard_(p) {
+  return locked_(() => {
+    const order = orders_().find((o) => o.rifaId === String(p.rifaId));
+    if (!order) fail_("No encontramos la solicitud.", "NOT_FOUND");
+    if (order.status === "deleted") fail_("Este cartón fue eliminado y no se puede reactivar.", "NOT_FOUND");
+    assertOpen_({ expiresAt: expiry_(order.draft.fecha) });
+    if (order.status === "active") return { ok: true, order: orderView_(order) };
+    if (order.amount !== CARD_PRICE) fail_("El valor del cartón no coincide.");
+    createRaffleLocked_(order.draft);
+    const row = rows_("orders")[order.row - 2]; row[2] = "active"; row[4] = new Date().toISOString();
+    table_("orders").getRange(order.row, 1, 1, 8).setValues([row]);
+    invalidateCache_("rifapro:catalog:v4");
+    return { ok: true, order: orderView_(orders_().find((o) => o.rifaId === order.rifaId)) };
   });
 }
 

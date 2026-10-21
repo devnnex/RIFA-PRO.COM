@@ -27,7 +27,7 @@ function server(legacyRows) {
     LockService: { getScriptLock: () => ({ tryLock: () => { assert(!locked); locked = true; return true; }, releaseLock: () => { locked = false; } }) },
     PropertiesService: { getScriptProperties: () => ({ getProperty: (key) => properties.get(key), setProperty: (k,v) => properties.set(k,v), deleteProperty: (key) => properties.delete(key) }) },
     CacheService: { getScriptCache: () => ({ get: (key) => cache.get(key), put: (k,v) => cache.set(k,v), remove: (key) => cache.delete(key) }) },
-    Utilities: { getUuid: () => crypto.randomUUID(), formatDate: (value,zone,format) => { const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(value).map(p=>[p.type,p.value])); return format==='HH:mm'?`${parts.hour}:${parts.minute}`:`${parts.year}-${parts.month}-${parts.day}`; } },
+    Utilities: { getUuid: () => crypto.randomUUID(), DigestAlgorithm: {SHA_256:'sha256'}, Charset: {UTF_8:'utf8'}, computeDigest: (algorithm,text) => [...crypto.createHash(algorithm).update(text).digest()], formatDate: (value,zone,format) => { const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(value).map(p=>[p.type,p.value])); return format==='HH:mm'?`${parts.hour}:${parts.minute}`:`${parts.year}-${parts.month}-${parts.day}`; } },
     ContentService: { MimeType: { JSON:'json', JAVASCRIPT:'js' }, createTextOutput: (value) => ({ value, setMimeType() { return this; } }) }
   });
   vm.runInContext(code,ctx);
@@ -217,4 +217,72 @@ test('batch updates retain the cleanup behavior for duplicated legacy rows', () 
   const duplicate=[...legacyPaid];duplicate[1]='7';const s=server([legacyHeaders,legacyMeta,legacyPaid,duplicate]);
   const result=s.post('batchNumbers',{changes:[{action:'updateNumber',payload:reservation({rifaId:'old',estado:'pagado',paymentMethod:'efectivo',revision:0})}]},s.login());
   assert.equal(result.results[0].ok,true);assert.equal(s.sheets.get('rifas').data.length,3);
+});
+
+function card(extra={}) { return {rifaId:crypto.randomUUID(),ownerKey:crypto.randomUUID()+crypto.randomUUID(),contact:'3007654321',titulo:'Rifa independiente',premio:'Una bicicleta',cantidad:100,precio:5000,loteria:'Boyacá',fecha:'2099-11-01',hora:'17:00',responsable:'Organizador',...extra}; }
+function ordered(s,p=card()) { const order=s.post('orderCard',p);assert.equal(order.ok,true,JSON.stringify(order));const session=s.post('ownerLogin',{rifaId:p.rifaId,ownerKey:p.ownerKey});assert.equal(session.ok,true);return {p,token:session.token,session}; }
+test('creating a card charges a fixed server amount and stores only a hashed owner key',()=>{
+  const s=server(),p=card({amount:0,status:'active'}),a=ordered(s,p);
+  assert.equal(a.session.order.amount,1000);assert.equal(a.session.order.status,'pending');
+  assert(!JSON.stringify(s.sheets.get('RifaPro_Cartones').data).includes(p.ownerKey));
+  assert.equal(s.post('orderCard',p).ok,true);assert.equal(s.sheets.get('RifaPro_Cartones').data.length,2);
+  assert.equal(s.post('orderCard',{...p,ownerKey:crypto.randomUUID()+crypto.randomUUID()}).code,'CONFLICT');
+});
+test('unpaid cards cannot be viewed publicly, edited, reserved or activated by their owner',()=>{
+  const s=server(),{p,token}=ordered(s);
+  assert.equal(s.get('getSnapshot',{rifaId:p.rifaId}).rifas.length,0);
+  assert.equal(s.get('getRifaNumbers',{rifaId:p.rifaId}).code,'NOT_FOUND');
+  assert.equal(s.post('reserveNumber',reservation({rifaId:p.rifaId})).code,'NOT_FOUND');
+  assert.equal(s.post('adminSnapshot',{rifaId:p.rifaId},token).code,'PAYMENT_PENDING');
+  assert.equal(s.post('updateNumber',reservation({rifaId:p.rifaId}),token).code,'PAYMENT_PENDING');
+  assert.equal(s.post('approveCard',{rifaId:p.rifaId},token).code,'FORBIDDEN');
+  assert.equal(s.post('createRaffle',p,token).code,'FORBIDDEN');
+});
+test('reporting payment does not activate a card; platform approval is required and idempotent',()=>{
+  const s=server(),{p,token}=ordered(s),admin=s.login();
+  assert.equal(s.post('reportPayment',{},token).order.status,'reviewing');
+  assert.equal(s.get('getSnapshot',{rifaId:p.rifaId}).rifas.length,0);
+  assert.equal(s.post('listOrders',{},token).code,'FORBIDDEN');
+  const queue=s.post('listOrders',{},admin);assert.equal(queue.orders[0].rifaId,p.rifaId);assert(!JSON.stringify(queue).includes('ownerHash'));
+  assert.equal(s.post('approveCard',{rifaId:p.rifaId},admin).order.status,'active');
+  assert.equal(s.post('approveCard',{rifaId:p.rifaId},admin).ok,true);
+  assert.equal(s.get('getSnapshot',{rifaId:p.rifaId}).rifas[0].rifaId,p.rifaId);
+  assert.equal(s.post('adminSnapshot',{rifaId:p.rifaId},token).rifas.length,1);
+});
+test('owners and shared links are isolated from every other card and legacy raffle',()=>{
+  const s=server(),a=ordered(s),b=ordered(s),admin=s.login();
+  for(const x of [a,b])assert.equal(s.post('approveCard',{rifaId:x.p.rifaId},admin).ok,true);
+  const snapshot=s.post('adminSnapshot',{},a.token);assert.deepEqual(snapshot.rifas.map(r=>r.rifaId),[a.p.rifaId]);
+  for(const action of ['adminSnapshot','updateNumber','releaseNumber','updatePrize','deleteRifa'])assert.equal(s.post(action,reservation({rifaId:b.p.rifaId}),a.token).code,'FORBIDDEN',action);
+  const batch=s.post('batchNumbers',{changes:[{action:'updateNumber',payload:reservation({rifaId:b.p.rifaId,estado:'pagado',paymentMethod:'efectivo',revision:0})}]},a.token);assert.equal(batch.results[0].code,'FORBIDDEN');
+  assert.deepEqual(s.get('getRifas').data.map(r=>r.rifaId),['test']);
+  assert.deepEqual(s.get('getSnapshot',{rifaId:a.p.rifaId}).rifas.map(r=>r.rifaId),[a.p.rifaId]);
+  assert.equal(s.post('ownerLogin',{rifaId:b.p.rifaId,ownerKey:a.p.ownerKey}).code,'INVALID_KEY');
+  assert.equal(s.post('updateNumber',reservation({rifaId:a.p.rifaId,estado:'pagado',paymentMethod:'efectivo',revision:0}),a.token).ok,true);
+  assert.equal(s.post('adminSnapshot',{},a.token).summary.recaudado,5000);
+});
+test('public card data never includes owner credentials, platform payment contact or financial totals',()=>{
+  const s=server(),{p,token}=ordered(s);s.post('approveCard',{rifaId:p.rifaId},s.login());s.post('reserveNumber',reservation({rifaId:p.rifaId}));
+  const json=JSON.stringify(s.get('getSnapshot',{rifaId:p.rifaId}));
+  for(const secret of [p.ownerKey,p.contact,'ownerHash','summary','clienteTelefono','paymentMethod'])assert(!json.includes(secret),secret);
+  s.post('logout',{sessionToken:token});assert.equal(s.post('ownerStatus',{},token).code,'UNAUTHORIZED');
+});
+test('expiry closes at the end of the second day after the draw in Colombia time',()=>{
+  const s=server();assert.equal(s.ctx.expiry_('2026-10-31'),'2026-11-03T05:00:00.000Z');
+  assert.equal(s.ctx.expiry_('invalid'),null);
+  const real=Date.now;try{Date.now=()=>Date.parse('2026-11-03T04:59:59.999Z');assert.equal(s.post('reserveNumber',reservation()).ok,true);
+    Date.now=()=>Date.parse('2026-11-03T05:00:00.000Z');assert.equal(s.post('reserveNumber',reservation({numeroId:'08'})).code,'EXPIRED');
+    const admin=s.login();assert.equal(s.post('updateNumber',reservation({estado:'pagado',paymentMethod:'efectivo',revision:1}),admin).code,'EXPIRED');
+    assert.equal(s.post('updatePrize',{rifaId:'test',premio:'Otro',revision:0,requestId:crypto.randomUUID()},admin).code,'EXPIRED');
+    assert.equal(s.get('getSnapshot',{rifaId:'test'}).rifas[0].expired,true);assert.equal(s.post('adminSnapshot',{rifaId:'test'},admin).data.length,1);
+  }finally{Date.now=real;}
+});
+test('invalid or expired draft dates are rejected before requesting payment',()=>{
+  const s=server();assert.equal(s.post('orderCard',card({fecha:'2026-02-31'})).ok,false);assert.equal(s.post('orderCard',card({fecha:'2000-01-01'})).code,'EXPIRED');assert.equal(s.sheets.get('RifaPro_Cartones').data.length,1);
+});
+test('deleted cards cannot be restored by replaying payment approval or an old creation',()=>{
+  const s=server(),{p,token}=ordered(s),admin=s.login();s.post('approveCard',{rifaId:p.rifaId},admin);
+  assert.equal(s.post('deleteRifa',{rifaId:p.rifaId},token).ok,true);
+  assert.equal(s.post('approveCard',{rifaId:p.rifaId},admin).code,'NOT_FOUND');
+  assert.equal(s.post('orderCard',p).order.status,'deleted');assert.equal(s.get('getSnapshot',{rifaId:p.rifaId}).rifas.length,0);
 });
