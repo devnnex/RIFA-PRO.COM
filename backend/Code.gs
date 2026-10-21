@@ -513,7 +513,7 @@ function orders_() {
   return rows_("orders").map((row, index) => ({ rifaId: String(row[0]), hash: String(row[1]), status: String(row[2]),
     createdAt: isoDate_(row[3]), updatedAt: isoDate_(row[4]), draft: JSON.parse(row[5]), contact: unsheet_(row[6]), amount: Number(row[7]), row: index + 2 }));
 }
-function orderView_(o) { return { rifaId: o.rifaId, status: o.status, createdAt: o.createdAt, titulo: o.draft.titulo, fecha: o.draft.fecha, contact: o.contact, amount: o.amount, expiresAt: expiry_(o.draft.fecha), hasPin: Boolean(accessRow_(o.rifaId)) }; }
+function orderView_(o) { return { rifaId: o.rifaId, reference: "RP-" + String(o.row - 1).padStart(5, "0"), status: o.status, createdAt: o.createdAt, titulo: o.draft.titulo, fecha: o.draft.fecha, contact: o.contact, amount: o.amount, expiresAt: expiry_(o.draft.fecha), hasPin: Boolean(accessRow_(o.rifaId)) }; }
 function accessRow_(id) {
   const index = rows_("access").findIndex((row) => String(row[0]) === String(id));
   return index < 0 ? null : { row: index + 2, values: rows_("access")[index] };

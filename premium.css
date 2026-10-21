@@ -286,3 +286,77 @@ body:has(dialog[open]) { overflow: hidden; }
   #raffleDialog .creator-cost { margin-bottom: 0; }
 }
 @media (prefers-reduced-motion: reduce) { .owner-return { animation: none; } }
+
+/* Participant links keep the raffle in focus; studio access lives only at home. */
+.studio-access { display: grid; place-items: center; width: 28px; height: 32px; border-radius: 9px; color: var(--muted); text-decoration: none; margin-left: 2px; }
+.studio-access:hover,.studio-access:focus-visible { color: var(--ink); background: var(--soft); }
+.topbar .brand { margin-right: 0; }
+.topbar .header-actions { margin-left: auto; }
+.shared-link .page-intro,.shared-link .creator-entry,.shared-link #developerAccessButton { display: none; }
+.shared-link .workspace { margin-top: 0; }
+.acquire-card { display: flex; align-items: center; justify-content: center; gap: 10px; color: #fff; background: #176941; border: 1px solid #176941; text-align: left; padding: 10px 14px; font-size: 12px; line-height: 1.35; }
+.acquire-card small { display: block; font-size: 11px; color: #e6ffed; margin-top: 3px; }
+.acquire-card:hover { background: #105332; color: #fff; }
+.acquire-symbol { font-size: 23px; }
+.participant-view .shell { padding-top: 20px; }
+.modal-locked { position: fixed; width: 100%; overflow: hidden; }
+dialog { overscroll-behavior-y: contain; -webkit-overflow-scrolling: touch; touch-action: pan-y pinch-zoom; }
+dialog .create-body { scrollbar-width: thin; }
+button,input,label,.button { touch-action: pan-y pinch-zoom; }
+.creation-steps { display: flex; gap: 12px; align-items: center; margin-top: 18px; }
+.creation-steps>span { display: flex; gap: 8px; align-items: center; font-size: 12px; font-weight: 600; color: var(--muted); }
+.creation-steps i { display: grid; place-items: center; width: 25px; height: 25px; border-radius: 50%; background: var(--soft); font-size: 11px; font-style: normal; }
+.creation-steps [aria-current],.creation-steps .step-done { color: #187046; }
+.creation-steps [aria-current] i,.creation-steps .step-done i { background: #187046; color: white; }
+.creation-steps b { height: 1px; width: 36px; background: var(--line); }
+.creation-preview { padding: 16px; margin: 12px 0 4px; display: flex; gap: 14px; align-items: center; background: var(--soft); border-radius: 18px; }
+.creation-preview>span { font-size: 36px; line-height: 1; color: var(--accent); }
+.creation-preview small { font-size: 8px; font-weight: 650; letter-spacing: 1.2px; color: var(--muted); }
+.creation-preview strong { display: block; margin: 3px 0; font-size: 16px; line-height: 1.3; overflow-wrap: anywhere; }
+.creation-preview p { color: var(--muted); font-size: 11px; margin: 0; }
+.create-step { animation: step-enter 160ms ease-out; }
+.creation-actions { display: flex; gap: 9px; }
+.creation-actions #previousCreateStep { width: auto; flex: none; padding-inline: 14px; }
+.creation-actions #nextCreateStep,.creation-actions #createRaffleButton { flex: 1; }
+.extra-settings { padding: 13px 0; border-block: 1px solid var(--line); margin-top: 20px; }
+.extra-settings summary { display: flex; justify-content: space-between; cursor: pointer; font-size: 13px; font-weight: 600; list-style: none; }
+.extra-settings summary::-webkit-details-marker { display: none; }
+.extra-settings[open] summary span { transform: rotate(45deg); }
+.pin-fields input::placeholder { letter-spacing: 0; font-size: 14px; font-weight: 400; color: var(--muted); opacity: 1; }
+.payment-brands img { display: block; width: min(100%,270px); height: auto; object-fit: contain; }
+.payment-reference { display: flex; gap: 9px; align-items: center; justify-content: center; font-size: 11px; margin: 20px 0 0; }
+.payment-reference span { margin: 0; display: inline-block; padding: 7px 12px; background: var(--soft); color: var(--ink); font-size: 13px; font-weight: 650; border: 1px solid var(--line); border-radius: 9px; letter-spacing: 1px; font-variant-numeric: tabular-nums; }
+.qr-image-frame { background: #fff; border-radius: 18px; overflow: hidden; margin: 20px 0; }
+.qr-image-frame img { display: block; width: 100%; height: auto; -webkit-touch-callout: default; user-select: auto; }
+.qr-dialog>.button { display: flex; width: 100%; justify-content: center; margin-top: 10px; }
+.qr-dialog #qrUnavailable { padding: 18px; margin: 18px 0; background: var(--soft); border-radius: 14px; }
+.numero.pagado:has(.transfer) { background: #eee0f6; color: #593174; border-color: #c5a3d8; }
+.numero.pagado:has(.transfer) .number-state { color: #593174; }
+.dark-mode .numero.pagado:has(.transfer) { background: #432653; color: #f3deff; border-color: #8b60a3; }
+.dark-mode .numero.pagado:has(.transfer) .number-state { color: #e0c0f1; }
+.dark-mode .button-outline,.dark-mode .button-quiet { background: #25374a; color: #f0f3f6; border-color: #64778b; }
+.button-quiet { color: var(--ink); }
+.dark-mode .button-primary { background: #e9e2d5; color: #152538; border-color: #e9e2d5; }
+.dark-mode .button-primary:hover { background: #fff7e8; color: #152538; }
+.dark-mode .organizer-access,.dark-mode .owner-return,.dark-mode .acquire-card,.dark-mode .button-whatsapp { color: #fff; background: #187046; border-color: #3c996a; }
+.dark-mode .share-copy { background: #203f33; color: #c0f5d0; border-color: #539d6c; }
+.dark-mode .creation-steps [aria-current],.dark-mode .creation-steps .step-done { color: #a7efc1; }
+.dark-mode .payment-key-card { background: #fff; color: #210021; }
+.dark-mode .payment-key-card .button-primary { background: #17283d; color: #fff; border-color: #17283d; }
+.dark-mode .payment-key-card .button-outline { background: #f3ecf7; color: #3a174d; border-color: #b8a0c6; }
+.dark-mode input::placeholder { color: #b0bac7; opacity: 1; }
+.dark-mode .close-button { color: #e6edf4; background: #25374a; border-color: #64778b; }
+@keyframes step-enter { from { transform: translateY(6px); opacity: .4; } to { transform: none; opacity: 1; } }
+@media(max-width:600px) {
+  .topbar { column-gap: 5px; row-gap: 10px; }
+  .topbar .brand { flex: none; }
+  .header-actions { grid-template-columns: 44px minmax(0,1fr); }
+  .participant-view .header-actions { grid-template-columns: 40px minmax(0,1fr); }
+  .participant-view .acquire-card { min-height: 56px; font-size: 13px; padding: 10px 14px; justify-content: flex-start; }
+  .participant-view .acquire-card>span:last-child { margin-left: auto; }
+  .participant-view .acquire-card small { font-size: 11px; }
+  #raffleDialog .create-header { padding-bottom: 14px; }
+  #raffleDialog h2 { font-size: 24px; }
+  .creation-steps { margin-top: 14px; }
+}
+@media(prefers-reduced-motion:reduce) { .create-step { animation: none; } }

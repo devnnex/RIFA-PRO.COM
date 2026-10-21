@@ -25,7 +25,7 @@ jobs:
       - name: Prepare public files
         run: |
           mkdir dist
-          cp index.html app.js cartones.js config.js style.css premium.css manifest.json sw.js dist/
+          cp index.html app.js cartones.js experience.js config.js style.css premium.css manifest.json sw.js dist/
           cp -r images dist/
           touch dist/.nojekyll
       - uses: actions/configure-pages@v5

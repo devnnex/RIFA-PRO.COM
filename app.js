@@ -421,9 +421,11 @@ function logout(notify = true) {
 }
 function createRaffle(event) {
   event.preventDefault();
+  if (creationStep === 1) { if (validateCreationStep(1)) setCreationStep(2); return; }
   if ($("raffleForm").dataset.mode === "paid") { createPaidCard(); return; }
   if (!isPlatform()) return;
   const payload = Object.fromEntries(["titulo", "precio", "cantidad", "premio", "loteria", "fecha", "hora", "responsable", "condiciones"].map((id) => [id, $(id).value.trim()]));
+  payload.precio = amountValue(payload.precio);
   $("raffleForm").dataset.requestId ||= uuid(); payload.rifaId = $("raffleForm").dataset.requestId;
   if (state.pendingRaffles.has(payload.rifaId)) return;
   const optimistic = normalizeRaffle(payload);

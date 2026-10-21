@@ -27,7 +27,7 @@ exports.bootstrap = function () {
     }
     return append.call(this,node);
   };
-  const orderView = o => ({...o,ownerKey:undefined,adminPin:undefined,hasPin:Boolean(o.adminPin)});
+  const orderView = o => ({...o,reference:'RP-'+String(orders.indexOf(o)+1).padStart(5,'0'),ownerKey:undefined,adminPin:undefined,hasPin:Boolean(o.adminPin)});
   const denied = () => ({ok:false,code:'FORBIDDEN',error:'Este acceso no permite gestionar otro cartón.'});
   function edit(action,p){
     if(p.numeroId==='08')return {ok:false,code:'CONFLICT',record:{numeroId:'08',clienteNombre:'Marta',updatedAt:'2026-10-20T21:01:02Z'}};

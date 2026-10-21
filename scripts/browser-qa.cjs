@@ -52,9 +52,12 @@ const fixture = '(' + require('../tests/browser-fixture.cjs').bootstrap.toString
     await wait('document.getElementById("noticeDialog").open');assert((await evaluate('document.getElementById("noticeTitle").textContent')).includes('es tuyo'));await click('[data-close="noticeDialog"]');
     await click('[data-number="08"]');await set('#clienteNombre','Pedro QA');await set('#clienteTelefono','3001234567');await click('#saveNumberButton');
     await wait('document.getElementById("noticeDialog").open');assert((await evaluate('document.getElementById("noticeMessage").textContent')).includes('Marta'));await click('[data-close="noticeDialog"]');
-    await click('#adminButton');assert(await evaluate('document.getElementById("adminDialog").open'));await set('#pinInput','9999');await click('#loginButton');await wait('document.getElementById("adminError").textContent.includes("incorrecto")');
+    await evaluate('openPinLogin(false)');assert(await evaluate('document.getElementById("adminDialog").open'));await set('#pinInput','9999');await click('#loginButton');await wait('document.getElementById("adminError").textContent.includes("incorrecto")');
     assert(await evaluate('document.getElementById("adminSummary").hidden'));await set('#pinInput','4826');await click('#loginButton');await wait('!document.getElementById("adminSummary").hidden');
     const prepare=async(n,method)=>{await click('[data-number="'+n+'"]');await set('#clienteNombre','Cliente '+n);await set('#clienteTelefono','3001234567');await click('[data-state="pagado"]');if(method)await click('input[value="'+method+'"]');};
+    await click('#themeToggle');
+    await wait(`getComputedStyle(document.querySelector('[data-number="01"]')).backgroundColor==='rgb(67, 38, 83)'`);
+    assert.equal(await evaluate(`getComputedStyle(document.querySelector('[data-number="01"]')).backgroundColor`),'rgb(67, 38, 83)');await screenshot('dark-nequi-payments');await click('#themeToggle');
     await prepare('09');assert.equal(await evaluate('document.getElementById("numberForm").checkValidity()'),false);await click('input[value="transferencia"]');
     await screenshot('payment-transfer');await click('#saveNumberButton');assert(await evaluate('!document.getElementById("numberDialog").open'));await wait('state.pending.size===0');
     assert((await evaluate('document.getElementById("totalTransfer").textContent')).includes('40.000'));
@@ -89,16 +92,32 @@ const fixture = '(' + require('../tests/browser-fixture.cjs').bootstrap.toString
     await evaluate('window.__qa.calls=[]');await click('#chooseNumbers');
     assert.equal(await evaluate('document.activeElement.id'),'numbersTitle');
     assert.equal(await evaluate('window.__qa.calls.length'),0);
-    await click('#publicCreateButton');
+    assert(await evaluate('document.querySelector(".page-intro").hidden&&document.querySelector(".creator-entry").hidden&&document.getElementById("adminButton").hidden&&document.getElementById("developerAccessButton").hidden&&!document.getElementById("acquireCardButton").hidden'));
+    await click('#acquireCardButton');
+    await set('#titulo','Mi rifa independiente');await set('#premio','Una bicicleta');
+    await set('#precio','20000');await evaluate('document.getElementById("precio").dispatchEvent(new Event("input",{bubbles:true}))');
+    assert.equal(await evaluate('document.getElementById("precio").value'),'$20.000');
+    await send('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:1,mobile:true});await delay(180);await screenshot('creation-step-one');
+    await click('#nextCreateStep');assert(await evaluate('creationStep===2&&!document.getElementById("createStepTwo").hidden'));
+    await click('#previousCreateStep');assert.equal(await evaluate('document.getElementById("titulo").value'),'Mi rifa independiente');await click('#nextCreateStep');
     for(const width of [320,375,390,430]){
       await send('Emulation.setDeviceMetricsOverride',{width,height:844,deviceScaleFactor:1,mobile:true});
       for(const date of ['', '2099-11-01']){
         await set('#fecha',date);
-        assert(await evaluate('(()=>{const d=document.getElementById("raffleDialog"),b=d.querySelector(".create-body"),r=b.getBoundingClientRect();return document.documentElement.scrollWidth<=innerWidth&&d.scrollWidth<=d.clientWidth&&b.scrollWidth<=b.clientWidth&&[...d.querySelectorAll("input")].every(i=>i.getBoundingClientRect().right<=r.right)})()'),'creation overflow at '+width+' date '+date);
+        assert(await evaluate('(()=>{const d=document.getElementById("raffleDialog"),b=d.querySelector(".create-body"),r=b.getBoundingClientRect();return document.documentElement.scrollWidth<=innerWidth&&d.scrollWidth<=d.clientWidth&&b.scrollWidth<=b.clientWidth&&[...d.querySelectorAll("input")].filter(i=>i.getBoundingClientRect().width).every(i=>i.getBoundingClientRect().right<=r.right)})()'),'creation overflow at '+width+' date '+date);
       }
       assert(await evaluate('document.getElementById("createRaffleButton").getBoundingClientRect().bottom<=innerHeight'),'mobile action stays visible');
     }
     await send('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:1,mobile:true});
+    await evaluate('document.querySelector(".create-body").scrollTop=0');
+    const touchPoint=await evaluate('(()=>{const r=document.querySelector(".create-header").getBoundingClientRect();return {x:r.left+80,y:r.bottom-20}})()');
+    const lockedTop=await evaluate('document.body.style.top');
+    await send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[touchPoint]});
+    for(let i=1;i<=6;i++)await send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:touchPoint.x,y:touchPoint.y-i*15}]});
+    await send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+    assert(await evaluate('document.querySelector(".create-body").scrollTop>0'),'header gestures scroll modal content');
+    assert.equal(await evaluate('document.body.style.top'),lockedTop,'background stays locked');
+    await evaluate('document.querySelector(".create-body").scrollTop=0');
     for(const [id,value] of [['titulo','Mi rifa independiente'],['premio','Una bicicleta'],['fecha','2099-11-01'],['responsable','Organizador QA'],['creatorPhone','3007654321'],['creatorPin','7931'],['creatorPinConfirm','7931']])await set('#'+id,value);
     assert(await evaluate('Array.from(document.querySelectorAll("#raffleDialog input")).every(el=>parseFloat(getComputedStyle(el).fontSize)>=16)'));
     await screenshot('create-card-mobile');
@@ -110,14 +129,38 @@ const fixture = '(' + require('../tests/browser-fixture.cjs').bootstrap.toString
     assert(!(await evaluate('localStorage.getItem("rifapro.public.v2")')).includes('#acceso='));
     const whatsapp=await evaluate('document.getElementById("paidWhatsApp").href');assert(whatsapp.startsWith('https://wa.me/573246394689?text='));assert(decodeURIComponent(whatsapp).includes('comprobante'));
     await evaluate('window.__copied="";navigator.clipboard.writeText=async text=>{window.__copied=text};document.getElementById("copyPaymentKey").click()');assert.equal(await evaluate('window.__copied'),'3208759798');
-    await evaluate('window.__originalAnchorClick=HTMLAnchorElement.prototype.click;HTMLAnchorElement.prototype.click=function(){window.__download={name:this.download,url:this.href}};document.getElementById("downloadPayment").click();HTMLAnchorElement.prototype.click=window.__originalAnchorClick');
-    assert.equal(await evaluate('window.__download.name'),'pago-carton-rifa-pro.png');assert((await evaluate('window.__download.url')).startsWith('data:image/png'));
+    assert.match(await evaluate('document.getElementById("paymentReference").textContent'),/^RP-\d{5}$/);
+    assert(await evaluate('document.getElementById("paymentBrandsImage").complete&&document.getElementById("paymentBrandsImage").naturalWidth>=1000'));
+    await click('#downloadPayment');await wait('document.getElementById("qrDialog").open');
+    await wait('!document.getElementById("qrImageFrame").hidden&&document.getElementById("paymentQrImage").naturalWidth===1170');
+    await delay(180);
+    await screenshot('original-payment-qr');
+    // Capture the native share call without saving or sending anything externally.
+    await evaluate('navigator.canShare=()=>true;navigator.share=async data=>{window.__sharedFile=data.files[0].name}');
+    await click('#saveQrImage');assert.equal(await evaluate('window.__sharedFile'),'qr-elkin-rangel.png');
+    await evaluate('window.__savedQrAsset=qrAsset;window.__savedQrReady=qrAssetReady;qrAsset=null;qrAssetReady=Promise.resolve(null);showPaymentQr()');
+    assert(await evaluate('!document.getElementById("qrUnavailable").hidden&&document.getElementById("qrImageFrame").hidden'));
+    await evaluate('qrAsset=window.__savedQrAsset;qrAssetReady=window.__savedQrReady');
+    await click('[data-close="qrDialog"]');assert(await evaluate('document.getElementById("paymentDialog").open&&document.body.classList.contains("modal-locked")'));
     await screenshot('card-payment-desktop');
     await send('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:1,mobile:true});await screenshot('card-payment-mobile');
     assert(await evaluate('document.getElementById("paymentDialog").scrollWidth<=document.getElementById("paymentDialog").clientWidth'));
+    for(const dark of [true,false]){
+      await evaluate(`setTheme(${dark})`);await delay(180);
+      const unreadable=await evaluate(`(()=>{
+        const rgb=s=>s.match(/[\\d.]+/g)?.slice(0,3).map(Number)||[0,0,0];
+        const lum=c=>c.map(v=>{v/=255;return v<=.04045?v/12.92:((v+.055)/1.055)**2.4}).reduce((n,v,i)=>n+v*[.2126,.7152,.0722][i],0);
+        return [...document.querySelectorAll('.button')].filter(b=>b.getClientRects().length&&!b.disabled).map(b=>{
+          let p=b,bg='';while(p){bg=getComputedStyle(p).backgroundColor;if(!bg.endsWith(', 0)')&&bg!=='transparent')break;p=p.parentElement;}
+          const a=lum(rgb(getComputedStyle(b).color)),z=lum(rgb(bg));return {text:b.textContent.trim().slice(0,35),ratio:(Math.max(a,z)+.05)/(Math.min(a,z)+.05)};
+        }).filter(r=>r.ratio<4.5);
+      })()`);
+      assert.deepEqual(unreadable,[],'button contrast in '+(dark?'dark':'light')+' mode');
+    }
     await evaluate('document.getElementById("paidWhatsApp").addEventListener("click",e=>e.preventDefault(),{once:true});document.getElementById("paidWhatsApp").click()');await wait('state.ownerOrder.status==="reviewing"');assert(await evaluate('!isAdmin()'));
     await click('[data-close="paymentDialog"]');await click('#adminButton');await wait('!hasSession()');
-    assert(await evaluate('document.getElementById("developerAccessButton").getBoundingClientRect().width>0'));
+    await send('Page.navigate',{url:'http://127.0.0.1:4173/RIFA-PRO.COM/'});await wait('typeof state!=="undefined"&&state.online');
+    assert(await evaluate('document.getElementById("developerAccessButton").getBoundingClientRect().width>0&&document.getElementById("developerAccessButton").textContent.trim()===""'));
     await click('#developerAccessButton');
     await wait('document.getElementById("developerPanel")&&!document.getElementById("developerPanel").hidden');
     assert(await evaluate('document.querySelector(".workspace").hidden&&document.getElementById("ordersPanel").hidden'));
@@ -173,6 +216,7 @@ const fixture = '(' + require('../tests/browser-fixture.cjs').bootstrap.toString
     }
     await send('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:1,mobile:true});await click('#themeToggle');await screenshot('mobile-dark');await click('#themeToggle');
     await wait('navigator.serviceWorker.controller!==null');
+    assert(await evaluate('caches.keys().then(async keys=>Boolean(await (await caches.open(keys.find(k=>k.startsWith("rifapro-shell")))).match(new URL("./images/breb-nequi.png",location.href))))'));
     const assets=await evaluate('Promise.all(["./images/icon-192.png","./images/icon-512.png","./images/apple-touch-icon.png"].map(src=>new Promise(resolve=>{const i=new Image();i.onload=()=>resolve(i.naturalWidth);i.onerror=()=>resolve(0);i.src=src})))');assert.deepEqual(assets,[192,512,180]);
     await send('Network.enable');await send('Network.emulateNetworkConditions',{offline:true,latency:0,downloadThroughput:0,uploadThroughput:0});await wait('!navigator.onLine');
     await click('[data-number="12"]');await wait('document.getElementById("noticeDialog").open');assert((await evaluate('document.getElementById("noticeTitle").textContent')).includes('Conéctate'));
@@ -186,7 +230,7 @@ const fixture = '(' + require('../tests/browser-fixture.cjs').bootstrap.toString
     assert.equal(await evaluate('state.rifas.length'),0);assert(await evaluate('document.getElementById("numeros").hidden&&document.getElementById("developerPanel").hidden'));
     await screenshot('public-landing');
     assert.equal(errors.length,0,JSON.stringify(errors));
-    log('PASS: immediate feedback '+instant.ms.toFixed(1)+'ms; stable DOM; single-request refresh; privacy; conflicts; transfer/cash; prize edits and rollback; batch writes; retry identity; scroll CTA; independent cards; payment/key/download; WhatsApp receipt; separate developer credentials/dashboard/approval/filters; owner PIN login; private copy with toast; public links without auto-login; loading state; mobile creation; 320–1024 layouts; 16px inputs; PWA offline.');
+    log('PASS: immediate feedback '+instant.ms.toFixed(1)+'ms; stable DOM; single-request refresh; privacy; conflicts; transfer/cash; prize edits and rollback; batch writes; retry identity; participant-only shared links; two-step creation; formatted currency; header touch gestures with background locked; original QR preview/native share/failure fallback; prefetched cached PNGs; readable day/night buttons; purple Nequi in dark mode; short references; WhatsApp receipt; separate developer approval; owner PIN restore; clipboard confirmation; 320–1024 layouts; 16px inputs; PWA offline.');
     console.log('Screenshots saved in .qa/. Fixture backend only; live deployment still needs validation.');
   } finally { if(ws?.readyState===1)ws.close();browser.kill();preview.kill(); }
 })().catch((e)=>{log(e.stack);process.exitCode=1;});

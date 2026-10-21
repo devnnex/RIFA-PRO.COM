@@ -7,6 +7,7 @@ let privateCardLink = "";
 let ordersLoading = false;
 let pinTarget = null;
 const paymentLabels = { pending: "Pendiente de pago", reviewing: "Comprobante por revisar", active: "Cartón activo", deleted: "Cartón eliminado" };
+function cardReference(order) { return order.reference || "RP-" + String(order.rifaId).replace(/-/g, "").slice(-6).toUpperCase(); }
 function openPinLogin(global = true) {
   state.globalPinLogin = global; $("adminError").textContent = ""; $("pinInput").value = "";
   $("adminTitle").textContent = global ? "Vuelve a tu cartón." : "Tu rifa, en detalle.";
@@ -53,6 +54,7 @@ function renderCartones() {
   $("chooseNumbers").hidden = !r;
   $("chooseNumbers").disabled = raffleExpired(r);
   if (hasSession() && state.role === "owner" && !isAdmin()) status("Cartón pendiente de activación", "online");
+  if (typeof renderExperience === "function") renderExperience();
 }
 function startPaidCard() {
   if (hasSession()) { toast("Cierra tu sesión antes de crear otro cartón independiente."); return; }
@@ -63,6 +65,7 @@ function startPaidCard() {
   $("creatorPin").required = true; $("creatorPinConfirm").required = true;
   $("createRaffleButton").textContent = "Continuar al pago · $1.000 →";
   $("raffleError").textContent = "";
+  resetCreation();
   if (!cardDraft) cardDraft = { rifaId: uuid(), ownerKey: uuid() + uuid() };
   $("raffleDialog").showModal();
 }
@@ -70,20 +73,22 @@ function rafflePublicLink(id) { const url = new URL(location.href); url.search =
 function cardOwnerLink(id, key) { const url = rafflePublicLink(id); url.hash = "acceso=" + key; return url.href; }
 function currentCardLink() { return state.ownerOrder?.hasPin ? rafflePublicLink(state.ownerOrder.rifaId).href : privateCardLink; }
 function fillPayment(order) {
-  $("paymentReference").textContent = order.rifaId;
+  $("paymentReference").textContent = cardReference(order);
   $("cardPaymentStatus").textContent = paymentLabels[order.status] || "Por confirmar";
   $("privateAccessLink").value = order.hasPin ? rafflePublicLink(order.rifaId).href : privateCardLink;
   $("privateAccessSection").hidden = !$("privateAccessLink").value;
-  $("paidWhatsApp").href = "https://wa.me/" + RECEIPT_PHONE + "?text=" + encodeURIComponent("Hola, te escribo porque ya pagué mi cartón de rifa virtual. Te dejo el comprobante aquí:\n\nCartón: " + order.titulo + "\nReferencia: " + order.rifaId + "\nValor: $1.000 COP.\nAdjuntaré el comprobante en este chat.");
+  $("paidWhatsApp").href = "https://wa.me/" + RECEIPT_PHONE + "?text=" + encodeURIComponent("Hola, te escribo porque ya pagué mi cartón de rifa virtual. Te dejo el comprobante aquí:\n\nCartón: " + order.titulo + "\nReferencia: " + cardReference(order) + "\nValor: $1.000 COP.\nAdjuntaré el comprobante en este chat.");
   $("paidWhatsApp").hidden = order.status === "active" || order.status === "deleted";
   $("enterMyCard").hidden = order.status !== "active";
   if (!$("paymentDialog").open) $("paymentDialog").showModal();
 }
 async function createPaidCard() {
   const button = $("createRaffleButton"); if (button.disabled) return;
+  if (!validateCreation()) return;
   const pin = $("creatorPin").value;
   if (!/^\d{4}$/.test(pin) || pin !== $("creatorPinConfirm").value) { $("raffleError").textContent = "Escribe el mismo PIN de cuatro dígitos en ambos campos."; return; }
   const payload = { ...cardDraft, adminPin: pin, contact: $("creatorPhone").value.trim(), ...Object.fromEntries(["titulo", "precio", "cantidad", "premio", "loteria", "fecha", "hora", "responsable", "condiciones"].map((id) => [id, $(id).value.trim()])) };
+  payload.precio = amountValue(payload.precio);
   // Keep this recovery link before sending: an uncertain result can be retried safely.
   privateCardLink = cardOwnerLink(payload.rifaId, payload.ownerKey);
   try { sessionStorage.setItem("rifapro.cardAccess", privateCardLink); } catch { /* User can download the link. */ }
@@ -133,22 +138,6 @@ async function copyText(value, message) {
 function downloadText(name, text, type = "text/plain;charset=utf-8") {
   const url = URL.createObjectURL(new Blob([text], { type })), a = document.createElement("a"); a.href = url; a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
-function downloadPaymentCard() {
-  // A native instruction card. No QR is generated or substituted for a bank QR.
-  const canvas = document.createElement("canvas"); canvas.width = 1080; canvas.height = 1200;
-  const ctx = canvas.getContext("2d"); ctx.fillStyle = "#f5f2eb"; ctx.fillRect(0, 0, 1080, 1200);
-  ctx.fillStyle = "#17283d"; ctx.fillRect(60, 60, 960, 1080); ctx.textAlign = "center";
-  ctx.fillStyle = "#ded5c3"; ctx.font = "bold 30px -apple-system, sans-serif"; ctx.fillText("RIFA PRO · TU CARTÓN VIRTUAL", 540, 170);
-  ctx.fillStyle = "#ffffff"; ctx.font = "bold 100px -apple-system, sans-serif"; ctx.fillText("$1.000 COP", 540, 340);
-  ctx.font = "bold 52px -apple-system, sans-serif"; ctx.fillText("Nequi / Bre-B", 540, 480);
-  ctx.font = "30px -apple-system, sans-serif"; ctx.fillText("LLAVE / CELULAR", 540, 570);
-  ctx.font = "bold 70px -apple-system, sans-serif"; ctx.fillText("320 875 9798", 540, 665);
-  ctx.font = "42px -apple-system, sans-serif"; ctx.fillText("Elkin Rangel", 540, 755);
-  ctx.font = "26px -apple-system, sans-serif"; ctx.fillText("Envía el comprobante por WhatsApp", 540, 880); ctx.fillText("324 639 4689", 540, 925);
-  ctx.font = "22px -apple-system, sans-serif"; ctx.fillText("Referencia: " + (state.ownerOrder?.rifaId || ""), 540, 1020, 880);
-  ctx.fillStyle = "#ded5c3"; ctx.fillText("La activación requiere verificar el pago.", 540, 1080);
-  const a = document.createElement("a"); a.download = "pago-carton-rifa-pro.png"; a.href = canvas.toDataURL("image/png"); a.click();
-}
 async function loadOrders() {
   if (!isPlatform() || ordersLoading) return;
   const token = state.token; ordersLoading = true; $("refreshOrders").disabled = true;
@@ -161,7 +150,7 @@ async function loadOrders() {
     $("developerStats").innerHTML = [["Cartones", cards.length],["Por aprobar",pending.length],["Activos",active.length],["Vencidos",cards.filter((o) => o.expired && o.status !== "deleted").length]].map(([label,count]) => `<article class="kpi"><strong>${label}</strong>${count}</article>`).join("");
     const filter = $("developerFilter").value;
     const visible = cards.filter((o) => filter === "all" || (filter === "pending" ? pending.includes(o) : filter === "active" ? active.includes(o) : o.expired && o.status !== "deleted"));
-    $("ordersList").innerHTML = visible.length ? visible.map((o) => `<article class="order-row"><div><strong>${escapeHTML(o.titulo)}</strong><small>${escapeHTML(o.contact || "Rifa anterior")} · <span class="card-status ${o.status}">${escapeHTML(o.status === "deleted" ? "Eliminado" : o.expired ? "Vencido" : paymentLabels[o.status])}</span></small><small>Sorteo: ${escapeHTML(formatDate(o.fecha))}${o.legacy ? " · Cartón anterior" : " · $1.000 COP"}</small><small class="order-id">${escapeHTML(o.rifaId)}</small>${o.pinConflict ? '<small class="form-error">PIN repetido en una versión anterior. Asigna uno nuevo.</small>' : ''}</div><div class="order-actions">${pending.includes(o) ? `<button type="button" class="button button-outline button-small" data-approve-card="${escapeHTML(o.rifaId)}">Aprobar $1.000</button>` : o.status === "active" ? `<a class="button button-outline button-small" target="_blank" rel="noopener noreferrer" href="${escapeHTML(rafflePublicLink(o.rifaId).href)}">Ver rifa ↗</a>` : ""}${o.status !== "deleted" ? `<button type="button" class="button button-quiet button-small" data-reset-pin="${escapeHTML(o.rifaId)}">Cambiar PIN</button>` : ''}</div></article>`).join("") : '<p class="muted">No hay cartones en este estado.</p>';
+    $("ordersList").innerHTML = visible.length ? visible.map((o) => `<article class="order-row"><div><strong>${escapeHTML(o.titulo)}</strong><small>${escapeHTML(o.contact || "Rifa anterior")} · <span class="card-status ${o.status}">${escapeHTML(o.status === "deleted" ? "Eliminado" : o.expired ? "Vencido" : paymentLabels[o.status])}</span></small><small>Sorteo: ${escapeHTML(formatDate(o.fecha))}${o.legacy ? " · Cartón anterior" : " · $1.000 COP"}</small><small class="order-id">${escapeHTML(o.reference || (o.legacy ? "Cartón anterior" : cardReference(o)))}</small>${o.pinConflict ? '<small class="form-error">PIN repetido en una versión anterior. Asigna uno nuevo.</small>' : ''}</div><div class="order-actions">${pending.includes(o) ? `<button type="button" class="button button-outline button-small" data-approve-card="${escapeHTML(o.rifaId)}">Aprobar $1.000</button>` : o.status === "active" ? `<a class="button button-outline button-small" target="_blank" rel="noopener noreferrer" href="${escapeHTML(rafflePublicLink(o.rifaId).href)}">Ver rifa ↗</a>` : ""}${o.status !== "deleted" ? `<button type="button" class="button button-quiet button-small" data-reset-pin="${escapeHTML(o.rifaId)}">Cambiar PIN</button>` : ''}</div></article>`).join("") : '<p class="muted">No hay cartones en este estado.</p>';
   } catch (error) { toast(error.message); }
   finally { ordersLoading = false; $("refreshOrders").disabled = false; }
 }
@@ -194,9 +183,9 @@ function initCartones() {
   $("copyPaymentKey").addEventListener("click", () => copyText(PAYMENT_KEY, "Llave copiada: 320 875 9798"));
   $("copyPrivateLink").addEventListener("click", () => copyText(currentCardLink(), state.ownerOrder?.hasPin ? "Enlace del cartón copiado." : "Acceso anterior copiado. Guárdalo solo para ti."));
   $("downloadPrivateLink").addEventListener("click", () => downloadText("mi-carton-rifa-pro.txt", state.ownerOrder?.hasPin ? "RIFA PRO · MI CARTÓN\nAbre este enlace, pulsa Administrador y escribe tu PIN de 4 dígitos.\nLos participantes pueden abrir el enlace sin iniciar sesión.\n\n" + currentCardLink() : "RIFA PRO · ACCESO PRIVADO ANTERIOR\nNo compartas este enlace con participantes.\n\n" + privateCardLink));
-  $("downloadPayment").addEventListener("click", downloadPaymentCard);
+  $("downloadPayment").addEventListener("click", showPaymentQr);
   $("paidWhatsApp").addEventListener("click", () => { const token = state.token; api("reportPayment", {}, true).then((r) => { if (state.role === "owner" && state.token === token) { state.ownerOrder = r.order; $("cardPaymentStatus").textContent = paymentLabels[r.order.status]; renderCartones(); } }).catch((error) => toast(error.message)); });
-  $("enterMyCard").addEventListener("click", () => { $("paymentDialog").close(); refresh(); scrollToNumbers(); });
+  $("enterMyCard").addEventListener("click", () => { $("paymentDialog").close(); refresh(); requestAnimationFrame(scrollToNumbers); });
   $("openPayment").addEventListener("click", () => fillPayment(state.ownerOrder));
   $("refreshOrders").addEventListener("click", loadOrders);
   $("ordersList").addEventListener("click", async (event) => {

@@ -411,3 +411,13 @@ test('owner PIN change preserves numbers and rejects changes to another owner',(
   assert.equal(s.post('login',{pin:a.p.adminPin}).code,'INVALID_PIN');
   const owner=s.post('login',{pin:'7931'});assert.equal(s.post('adminSnapshot',{},owner.token).summary.transferencia,a.p.precio);
 });
+test('short references remain unique and stable through retries, approval and deletion',()=>{
+  const s=server(),a=ordered(s),b=ordered(s),dev=s.login();
+  const first=s.post('ownerStatus',{},a.token).order.reference,second=s.post('ownerStatus',{},b.token).order.reference;
+  assert.match(first,/^RP-\d{5}$/);assert.notEqual(first,second);
+  assert.equal(s.post('orderCard',a.p).order.reference,first);
+  assert.equal(s.post('approveCard',{rifaId:a.p.rifaId},dev).order.reference,first);
+  assert.equal(s.post('deleteRifa',{rifaId:a.p.rifaId},dev).ok,true);
+  assert.equal(s.post('ownerStatus',{},b.token).order.reference,second);
+  assert.equal(s.post('listOrders',{},dev).orders.find(o=>o.rifaId===a.p.rifaId).reference,first);
+});

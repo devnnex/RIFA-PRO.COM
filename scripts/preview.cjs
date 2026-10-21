@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const root = path.resolve(__dirname, '..');
 const types = { '.html':'text/html; charset=utf-8', '.js':'text/javascript; charset=utf-8', '.css':'text/css; charset=utf-8', '.json':'application/json', '.svg':'image/svg+xml', '.png':'image/png' };
-const publicFiles = new Set(['index.html','app.js','cartones.js','config.js','style.css','premium.css','manifest.json','sw.js']);
+const publicFiles = new Set(['index.html','app.js','cartones.js','experience.js','config.js','style.css','premium.css','manifest.json','sw.js']);
 http.createServer((req, res) => {
   let relative;
   try { relative = decodeURIComponent(new URL(req.url, 'http://localhost').pathname).replace(/^\/+/, '').replace(/^RIFA-PRO\.COM\//, '') || 'index.html'; }
