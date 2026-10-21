@@ -5,7 +5,13 @@ const RECEIPT_PHONE = "573246394689";
 let cardDraft = null;
 let privateCardLink = "";
 let ordersLoading = false;
+let pinTarget = null;
 const paymentLabels = { pending: "Pendiente de pago", reviewing: "Comprobante por revisar", active: "Cartón activo", deleted: "Cartón eliminado" };
+function openPinLogin(global = true) {
+  state.globalPinLogin = global; $("adminError").textContent = ""; $("pinInput").value = "";
+  $("adminTitle").textContent = global ? "Vuelve a tu cartón." : "Tu rifa, en detalle.";
+  $("adminDialog").showModal();
+}
 
 function scrollToNumbers() {
   $("numeros").scrollIntoView({ block: "start", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" });
@@ -32,11 +38,11 @@ function renderCartones() {
   document.querySelector(".workspace").hidden = developerPage;
   document.querySelector(".page-intro").hidden = developerPage;
   if (developerPage) status(isPlatform() ? "Panel del desarrollador" : "Acceso privado", "online");
-  $("legacyAccessButton").hidden = !activeRaffle() || developerPage;
   $("entryLoader").hidden = !state.entryLoading || developerPage;
   $("numeros").hidden = !activeRaffle() || state.entryLoading;
   $("infoRifa").hidden = state.entryLoading;
-  $("pinSetupButton").hidden = !isAdmin() || state.ownerOrder?.hasPin !== false || !state.capabilities.ownerPin;
+  $("pinSetupButton").hidden = !isAdmin() || !state.capabilities.pinOnlyLogin;
+  $("pinSetupButton").textContent = state.ownerOrder?.hasPin === false ? "Crear mi PIN" : "Cambiar mi PIN";
   document.body.classList.toggle("landing-page", !developerPage && !activeRaffle() && !hasSession());
   document.querySelector(".sidebar-heading").hidden = !activeRaffle();
   $("listaRifas").hidden = !activeRaffle();
@@ -50,7 +56,7 @@ function renderCartones() {
 }
 function startPaidCard() {
   if (hasSession()) { toast("Cierra tu sesión antes de crear otro cartón independiente."); return; }
-  if (!state.capabilities.ownerPin) { notice("Estamos habilitando los nuevos cartones", "La creación de nuevos cartones estará disponible cuando el servicio esté listo. Intenta de nuevo más tarde."); return; }
+  if (!state.capabilities.pinOnlyLogin) { notice("Estamos habilitando los nuevos cartones", "La creación de nuevos cartones estará disponible cuando el servicio esté listo. Intenta de nuevo más tarde."); return; }
   $("raffleForm").reset(); $("raffleForm").dataset.mode = "paid";
   $("raffleDialogTitle").textContent = "Tu rifa, tu propio espacio.";
   $("creatorFields").hidden = false; $("creatorPhone").required = true;
@@ -103,8 +109,9 @@ async function refreshOwnerOrder() {
   const result = await api("ownerStatus", {}, true); state.ownerOrder = result.order;
 }
 function clearOwnerAccess() {
-  privateCardLink = ""; $("privateAccessLink").value = ""; $("ownerLinkInput").value = "";
-  $("paymentDialog").close(); $("ownerLoginDialog").close();
+  pinTarget = null;
+  privateCardLink = ""; $("privateAccessLink").value = "";
+  $("paymentDialog").close();
   $("developerPassword").value = "";
   $("pinInput").value = ""; $("setupPin").value = ""; $("setupPinConfirm").value = ""; $("pinSetupDialog").close();
   try { sessionStorage.removeItem("rifapro.cardAccess"); } catch { /* Optional storage. */ }
@@ -116,7 +123,7 @@ async function enterOwnerLink(link) {
   const result = await api("ownerLogin", { rifaId: id, ownerKey: key });
   privateCardLink = cardOwnerLink(id, key);
   try { sessionStorage.setItem("rifapro.cardAccess", privateCardLink); } catch { /* Optional recovery. */ }
-  useOwnerSession(result); $("ownerLoginDialog").close();
+  useOwnerSession(result);
   if (result.order.status === "active") { state.entryLoading = true; render(); refresh(); } else fillPayment(result.order);
 }
 async function copyText(value, message) {
@@ -154,17 +161,17 @@ async function loadOrders() {
     $("developerStats").innerHTML = [["Cartones", cards.length],["Por aprobar",pending.length],["Activos",active.length],["Vencidos",cards.filter((o) => o.expired && o.status !== "deleted").length]].map(([label,count]) => `<article class="kpi"><strong>${label}</strong>${count}</article>`).join("");
     const filter = $("developerFilter").value;
     const visible = cards.filter((o) => filter === "all" || (filter === "pending" ? pending.includes(o) : filter === "active" ? active.includes(o) : o.expired && o.status !== "deleted"));
-    $("ordersList").innerHTML = visible.length ? visible.map((o) => `<article class="order-row"><div><strong>${escapeHTML(o.titulo)}</strong><small>${escapeHTML(o.contact || "Rifa anterior")} · <span class="card-status ${o.status}">${escapeHTML(o.status === "deleted" ? "Eliminado" : o.expired ? "Vencido" : paymentLabels[o.status])}</span></small><small>Sorteo: ${escapeHTML(formatDate(o.fecha))}${o.legacy ? " · Cartón anterior" : " · $1.000 COP"}</small><small class="order-id">${escapeHTML(o.rifaId)}</small></div>${pending.includes(o) ? `<button type="button" class="button button-outline button-small" data-approve-card="${escapeHTML(o.rifaId)}">Aprobar $1.000</button>` : o.status === "active" ? `<a class="button button-outline button-small" target="_blank" rel="noopener noreferrer" href="${escapeHTML(rafflePublicLink(o.rifaId).href)}">Ver rifa ↗</a>` : ""}</article>`).join("") : '<p class="muted">No hay cartones en este estado.</p>';
+    $("ordersList").innerHTML = visible.length ? visible.map((o) => `<article class="order-row"><div><strong>${escapeHTML(o.titulo)}</strong><small>${escapeHTML(o.contact || "Rifa anterior")} · <span class="card-status ${o.status}">${escapeHTML(o.status === "deleted" ? "Eliminado" : o.expired ? "Vencido" : paymentLabels[o.status])}</span></small><small>Sorteo: ${escapeHTML(formatDate(o.fecha))}${o.legacy ? " · Cartón anterior" : " · $1.000 COP"}</small><small class="order-id">${escapeHTML(o.rifaId)}</small>${o.pinConflict ? '<small class="form-error">PIN repetido en una versión anterior. Asigna uno nuevo.</small>' : ''}</div><div class="order-actions">${pending.includes(o) ? `<button type="button" class="button button-outline button-small" data-approve-card="${escapeHTML(o.rifaId)}">Aprobar $1.000</button>` : o.status === "active" ? `<a class="button button-outline button-small" target="_blank" rel="noopener noreferrer" href="${escapeHTML(rafflePublicLink(o.rifaId).href)}">Ver rifa ↗</a>` : ""}${o.status !== "deleted" ? `<button type="button" class="button button-quiet button-small" data-reset-pin="${escapeHTML(o.rifaId)}">Cambiar PIN</button>` : ''}</div></article>`).join("") : '<p class="muted">No hay cartones en este estado.</p>';
   } catch (error) { toast(error.message); }
   finally { ordersLoading = false; $("refreshOrders").disabled = false; }
 }
 function initCartones() {
-  $("pinSetupButton").addEventListener("click", () => { $("pinSetupError").textContent = ""; $("pinSetupDialog").showModal(); });
+  $("pinSetupButton").addEventListener("click", () => { pinTarget = state.activeId; $("pinSetupError").textContent = ""; $("pinSetupForm").reset(); $("pinSetupDialog").showModal(); });
   $("pinSetupForm").addEventListener("submit", async (event) => {
     event.preventDefault(); const pin = $("setupPin").value;
     if (!/^\d{4}$/.test(pin) || pin !== $("setupPinConfirm").value) { $("pinSetupError").textContent = "Los PIN deben coincidir y tener cuatro dígitos."; return; }
     $("savePinButton").disabled = true;
-    try { const result = await api("setOwnerPin", { rifaId: state.activeId, pin }, true); state.ownerOrder = result.order; $("pinSetupDialog").close(); $("setupPin").value = ""; $("setupPinConfirm").value = ""; render(); toast("PIN guardado. La próxima vez entra desde Administrador con tus cuatro dígitos."); }
+    try { const result = await api("setOwnerPin", { rifaId: pinTarget, pin }, true); if (!isPlatform()) state.ownerOrder = result.order; $("pinSetupDialog").close(); $("setupPin").value = ""; $("setupPinConfirm").value = ""; render(); if (isPlatform()) loadOrders(); toast("PIN actualizado. Ya se puede entrar al cartón con sus cuatro dígitos."); }
     catch (error) { $("pinSetupError").textContent = error.message; }
     finally { $("savePinButton").disabled = false; }
   });
@@ -181,11 +188,9 @@ function initCartones() {
     finally { $("developerPassword").value = ""; $("developerLoginButton").disabled = false; }
   });
   $("developerFilter").addEventListener("change", loadOrders);
-  $("legacyAccessButton").addEventListener("click", () => { $("ownerLoginDialog").close(); $("adminError").textContent = ""; $("adminDialog").showModal(); });
   $("chooseNumbers").addEventListener("click", scrollToNumbers);
   $("publicCreateButton").addEventListener("click", startPaidCard);
-  $("ownerAccessButton").addEventListener("click", () => { $("ownerLoginError").textContent = ""; try { $("ownerLinkInput").value = sessionStorage.getItem("rifapro.cardAccess") || ""; } catch {} $("ownerLoginDialog").showModal(); });
-  $("ownerLoginForm").addEventListener("submit", async (event) => { event.preventDefault(); $("ownerLoginButton").disabled = true; try { await enterOwnerLink($("ownerLinkInput").value.trim()); } catch (error) { $("ownerLoginError").textContent = error.message; } finally { $("ownerLoginButton").disabled = false; } });
+  $("ownerAccessButton").addEventListener("click", () => openPinLogin(true));
   $("copyPaymentKey").addEventListener("click", () => copyText(PAYMENT_KEY, "Llave copiada: 320 875 9798"));
   $("copyPrivateLink").addEventListener("click", () => copyText(currentCardLink(), state.ownerOrder?.hasPin ? "Enlace del cartón copiado." : "Acceso anterior copiado. Guárdalo solo para ti."));
   $("downloadPrivateLink").addEventListener("click", () => downloadText("mi-carton-rifa-pro.txt", state.ownerOrder?.hasPin ? "RIFA PRO · MI CARTÓN\nAbre este enlace, pulsa Administrador y escribe tu PIN de 4 dígitos.\nLos participantes pueden abrir el enlace sin iniciar sesión.\n\n" + currentCardLink() : "RIFA PRO · ACCESO PRIVADO ANTERIOR\nNo compartas este enlace con participantes.\n\n" + privateCardLink));
@@ -195,6 +200,8 @@ function initCartones() {
   $("openPayment").addEventListener("click", () => fillPayment(state.ownerOrder));
   $("refreshOrders").addEventListener("click", loadOrders);
   $("ordersList").addEventListener("click", async (event) => {
+    const reset = event.target.closest("[data-reset-pin]");
+    if (reset && isPlatform()) { pinTarget = reset.dataset.resetPin; $("pinSetupError").textContent = ""; $("pinSetupForm").reset(); $("pinSetupDialog").showModal(); return; }
     const button = event.target.closest("[data-approve-card]"); if (!button || button.disabled) return;
     if (!await confirmAction("¿Confirmas que recibiste $1.000?", "Aprueba solo después de verificar la transferencia y el comprobante de esta referencia. Se activará el enlace público del cartón.", "Verificado · Activar cartón")) return;
     button.disabled = true; button.textContent = "Activando…";

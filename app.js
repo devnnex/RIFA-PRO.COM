@@ -9,7 +9,7 @@ const state = { rifas: [], activeId: null, records: [], summary: null, token: nu
   page: 1, selected: null, busy: false, installPrompt: null,
   capabilities: {}, pending: new Map(), pendingRaffles: new Map(), viewCache: new Map(),
   adminQueue: [], adminSending: false, writeEpoch: 0, prizeDraft: null,
-  role: "visitor", ownerOrder: null, numberLabels: new Map(), entryLoading: false };
+  role: "visitor", ownerOrder: null, numberLabels: new Map(), entryLoading: false, globalPinLogin: false };
 let toastTimer;
 const money = (value) => new Intl.NumberFormat("es-CO", { style: "currency", currency: "COP", maximumFractionDigits: 0 }).format(Number(value) || 0);
 const escapeHTML = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
@@ -396,7 +396,8 @@ async function login(event) {
   if (!state.protocol) { $("adminError").textContent = "El servicio debe actualizarse para habilitar el resumen privado."; return; }
   $("loginButton").disabled = true; $("loginButton").textContent = "Verificando…"; $("adminError").textContent = "";
   try {
-    const result = await api("login", { pin: $("pinInput").value, rifaId: state.activeId || new URL(location.href).searchParams.get("rifa") });
+    const rifaId = state.globalPinLogin ? undefined : state.activeId || new URL(location.href).searchParams.get("rifa") || undefined;
+    const result = await api("login", { pin: $("pinInput").value, ...(rifaId ? { rifaId } : {}) });
     if (!result.token || !result.expiresAt) throw new Error("El servidor no confirmó la sesión.");
     if (result.role !== "owner" || !result.rifaId) throw new Error("El acceso de organizador debe actualizarse antes de continuar.");
     useOwnerSession(result);
@@ -480,7 +481,7 @@ function init() {
   state.entryLoading = !developerPage && Boolean(requested);
   render(); status("Conectando", "loading");
   $("themeToggle").addEventListener("click", () => setTheme(!document.body.classList.contains("dark-mode")));
-  $("adminButton").addEventListener("click", () => { if (hasSession()) logout(); else if (developerPage) $("developerPassword").focus(); else if (activeRaffle() || new URL(location.href).searchParams.get("rifa")) { $("adminError").textContent = ""; $("adminDialog").showModal(); } else $("ownerAccessButton").click(); });
+  $("adminButton").addEventListener("click", () => { if (hasSession()) logout(); else if (developerPage) $("developerPassword").focus(); else openPinLogin(!activeRaffle()); });
   $("adminForm").addEventListener("submit", login); $("numberForm").addEventListener("submit", saveNumber);
   $("raffleForm").addEventListener("submit", createRaffle); $("releaseNumberButton").addEventListener("click", releaseNumber);
   $("estadoSelect").addEventListener("change", updatePaymentField);

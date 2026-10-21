@@ -6,7 +6,7 @@ const crypto = require('node:crypto');
 const code = fs.readFileSync('backend/Code.gs', 'utf8');
 
 function server(legacyRows) {
-  const sheets = new Map(), properties = new Map([['SPREADSHEET_ID','test'],['ADMIN_PIN','4826'],['DEVELOPER_PASSWORD','Developer-fixture-4826']]), cache = new Map();
+  const sheets = new Map(), properties = new Map([['SPREADSHEET_ID','test'],['ADMIN_PIN','4826'],['DEVELOPER_PIN','7462']]), cache = new Map();
   let locked = false;
   const metrics = { entryReads: 0, entryWrites: 0, ledgerWrites: 0, opens: 0 };
   class Sheet {
@@ -17,7 +17,7 @@ function server(legacyRows) {
     deleteRow(row) { assert(locked); this.data.splice(row - 1, 1); }
     getRange(start, column, count, width) {
       return { getValues: () => { if(this.name==='rifas' && start===2)metrics.entryReads++;return Array.from({length:count},(_,i) => Array.from({length:width},(_,j) => this.data[start-1+i]?.[column-1+j] ?? '')); },
-        setNumberFormat() {}, setValues: (values) => { assert(locked, 'writes require the server lock'); if(this.name==='rifas')metrics.entryWrites++;else metrics.ledgerWrites++;values.forEach((r,i) => { this.data[start-1+i] ||= []; r.forEach((v,j) => {this.data[start-1+i][column-1+j]=v;}); }); } };
+        setNumberFormat() {}, setValues: (values) => { assert(locked, 'writes require the server lock'); assert.equal(values.length,count); for(const row of values)assert.equal(row.length,width); if(this.name==='rifas')metrics.entryWrites++;else metrics.ledgerWrites++;values.forEach((r,i) => { this.data[start-1+i] ||= []; r.forEach((v,j) => {this.data[start-1+i][column-1+j]=v;}); }); } };
     }
   }
   const db = { getId: () => 'test', getSheetByName: (name) => sheets.get(name), insertSheet: (name) => { const s = new Sheet();s.name=name;sheets.set(name,s); return s; } };
@@ -36,7 +36,7 @@ function server(legacyRows) {
   ctx.prepararSistema();
   const post = (action,payload = {}, token) => JSON.parse(ctx.doPost({ postData:{contents:JSON.stringify({action,payload,token})} }).value);
   const get = (action,params = {}) => JSON.parse(ctx.doGet({ parameter:{action,...params} }).value);
-  const login = () => post('developerLogin',{password:'Developer-fixture-4826'}).token;
+  const login = () => post('developerLogin',{password:'7462'}).token;
   return {ctx,post,get,login,cache,properties,sheets,metrics};
 }
 function reservation(extra = {}) { return { rifaId:'test',numeroId:'07',clienteNombre:'Ana Pérez',clienteTelefono:'3001234567',requestId:crypto.randomUUID(),...extra }; }
@@ -220,7 +220,8 @@ test('batch updates retain the cleanup behavior for duplicated legacy rows', () 
   assert.equal(result.results[0].ok,true);assert.equal(s.sheets.get('rifas').data.length,3);
 });
 
-function card(extra={}) { return {rifaId:crypto.randomUUID(),ownerKey:crypto.randomUUID()+crypto.randomUUID(),adminPin:'4826',contact:'3007654321',titulo:'Rifa independiente',premio:'Una bicicleta',cantidad:100,precio:5000,loteria:'Boyacá',fecha:'2099-11-01',hora:'17:00',responsable:'Organizador',...extra}; }
+let cardSequence = 1000;
+function card(extra={}) { return {rifaId:crypto.randomUUID(),ownerKey:crypto.randomUUID()+crypto.randomUUID(),adminPin:String(++cardSequence),contact:'3007654321',titulo:'Rifa independiente',premio:'Una bicicleta',cantidad:100,precio:5000,loteria:'Boyacá',fecha:'2099-11-01',hora:'17:00',responsable:'Organizador',...extra}; }
 function ordered(s,p=card()) { const order=s.post('orderCard',p);assert.equal(order.ok,true,JSON.stringify(order));const session=s.post('ownerLogin',{rifaId:p.rifaId,ownerKey:p.ownerKey});assert.equal(session.ok,true);return {p,token:session.token,session}; }
 test('creating a card charges a fixed server amount and stores only a hashed owner key',()=>{
   const s=server(),p=card({amount:0,status:'active'}),a=ordered(s,p);
@@ -308,7 +309,7 @@ test('developer sees every card including unpaid, active and legacy; public sees
 });
 test('legacy password is bound to exactly one raffle when multiple legacy cards exist',()=>{
   const s=server(),p={rifaId:'second',titulo:'Otra',cantidad:100,precio:20000,premio:'Premio',loteria:'Boyacá',fecha:'2099-10-31',hora:'17:00',responsable:'Otro'};
-  s.post('createRaffle',p,s.login());assert.equal(s.post('login',{pin:'4826'}).ok,false);
+  s.post('createRaffle',p,s.login());assert.equal(s.post('login',{pin:'0000'}).ok,false);
   s.properties.set('LEGACY_RAFFLE_ID','test');assert.equal(s.post('login',{pin:'4826',rifaId:'second'}).code,'PIN_NOT_SET');
   const owner=s.post('login',{pin:'4826',rifaId:'test'});assert.equal(owner.role,'owner');
   assert.equal(s.post('adminSnapshot',{rifaId:'second'},owner.token).code,'FORBIDDEN');
@@ -316,15 +317,15 @@ test('legacy password is bound to exactly one raffle when multiple legacy cards 
 test('old global sessions are revoked and developer requires a separately configured password',()=>{
   const s=server(),token=crypto.randomUUID()+crypto.randomUUID();
   for(const raw of [String(Date.now()+60000),JSON.stringify({role:'platform',expiresAt:Date.now()+60000})]){s.cache.set('session:'+token,raw);assert.equal(s.post('developerDashboard',{},token).code,'UNAUTHORIZED');}
-  s.properties.delete('DEVELOPER_PASSWORD');assert.equal(s.post('developerLogin',{password:'4826'}).ok,false);
-  s.properties.set('DEVELOPER_PASSWORD','Developer-fixture-4826');const session=s.post('developerLogin',{password:'Developer-fixture-4826'});assert.equal(session.role,'developer');
+  s.properties.delete('DEVELOPER_PIN');assert.equal(s.post('developerLogin',{password:'4826'}).ok,false);
+  s.properties.set('DEVELOPER_PIN','7462');const session=s.post('developerLogin',{password:'7462'});assert.equal(session.role,'developer');
   assert.equal(s.post('developerDashboard',{},session.token).ok,true);
 });
 test('developer and raffle login attempt limits are separate',()=>{
   const s=server();for(let i=0;i<8;i++)s.post('login',{pin:'wrong',rifaId:'test'});
-  assert.equal(s.post('developerLogin',{password:'Developer-fixture-4826'}).role,'developer');
+  assert.equal(s.post('developerLogin',{password:'7462'}).role,'developer');
   for(let i=0;i<8;i++)s.post('developerLogin',{password:'wrong'});
-  assert.equal(s.post('developerLogin',{password:'Developer-fixture-4826'}).code,'RATE_LIMIT');
+  assert.equal(s.post('developerLogin',{password:'7462'}).code,'RATE_LIMIT');
 });
 test('each approved card logs in with its own PIN and stays limited to that raffle',()=>{
   const s=server(),a=ordered(s),b=ordered(s,card({adminPin:'7931'})),dev=s.login();
@@ -334,7 +335,7 @@ test('each approved card logs in with its own PIN and stays limited to that raff
   assert.equal(s.post('login',{rifaId:b.p.rifaId,pin:a.p.adminPin}).code,'INVALID_PIN');
   assert.equal(s.post('adminSnapshot',{rifaId:b.p.rifaId},session.token).code,'FORBIDDEN');
   assert.equal(s.post('approveCard',{rifaId:b.p.rifaId},session.token).code,'FORBIDDEN');
-  assert.equal(s.post('login',{pin:a.p.adminPin}).code,'RAFFLE_REQUIRED');
+  assert.equal(s.post('login',{pin:a.p.adminPin}).rifaId,a.p.rifaId);
 });
 test('PINs have separate salts, stay out of public responses, and do not create per-card script properties',()=>{
   const s=server(),before=[...s.properties.keys()].sort(),a=ordered(s),b=ordered(s),dev=s.login();
@@ -360,11 +361,53 @@ test('existing owners can set their missing PIN without affecting another card o
   assert.equal(s.post('setOwnerPin',{rifaId:a.p.rifaId,pin:'7931'},b.token).code,'FORBIDDEN');
   assert.equal(s.post('setOwnerPin',{rifaId:a.p.rifaId,pin:'123'},a.token).code,'INVALID_PIN_FORMAT');
   assert.equal(s.post('setOwnerPin',{rifaId:a.p.rifaId,pin:'7931'},a.token).order.hasPin,true);
-  assert.equal(s.post('setOwnerPin',{rifaId:a.p.rifaId,pin:'0000'},a.token).code,'PIN_ALREADY_SET');
+  assert.equal(s.post('setOwnerPin',{rifaId:a.p.rifaId,pin:b.p.adminPin},a.token).code,'PIN_IN_USE');
   assert.equal(s.post('orderCard',a.p).ok,true);assert.equal(s.post('login',{rifaId:a.p.rifaId,pin:'7931'}).role,'owner');
   assert.equal(s.post('login',{rifaId:a.p.rifaId,pin:a.p.adminPin}).code,'INVALID_PIN');
 });
 test('legacy PIN import is idempotent and no longer depends on ADMIN_PIN during login',()=>{
   const s=server();const original=JSON.stringify(s.sheets.get('RifaPro_Accesos').data);s.ctx.prepararSistema();assert.equal(JSON.stringify(s.sheets.get('RifaPro_Accesos').data),original);
   s.properties.delete('ADMIN_PIN');assert.equal(s.post('login',{rifaId:'test',pin:'4826'}).role,'owner');
+});
+test('PIN-only login restores saved reservations, payments and prize for exactly one card',()=>{
+  const s=server(),a=ordered(s),dev=s.login();s.post('approveCard',{rifaId:a.p.rifaId},dev);
+  const p=reservation({rifaId:a.p.rifaId,estado:'pagado',paymentMethod:'efectivo',revision:0});
+  assert.equal(s.post('updateNumber',p,a.token).ok,true);
+  s.post('logout',{sessionToken:a.token});
+  const session=s.post('login',{pin:a.p.adminPin});assert.equal(session.rifaId,a.p.rifaId);
+  const snap=s.post('adminSnapshot',{},session.token);assert.equal(snap.rifas.length,1);
+  assert.equal(snap.rifas[0].premio,a.p.premio);assert.equal(snap.data[0].clienteNombre,p.clienteNombre);assert.equal(snap.summary.efectivo,a.p.precio);
+});
+test('duplicate and developer PINs reject creation before inserting an order',()=>{
+  const s=server(),a=ordered(s),before=s.sheets.get('RifaPro_Cartones').data.length;
+  for(const pin of [a.p.adminPin,'7462'])assert.equal(s.post('orderCard',card({adminPin:pin})).code,'PIN_IN_USE');
+  assert.equal(s.sheets.get('RifaPro_Cartones').data.length,before);
+});
+test('five-column access migration supports PIN-only login without replacing the salted credential',()=>{
+  const s=server(),access=s.sheets.get('RifaPro_Accesos');access.data.forEach(row=>row.pop());
+  const hash=access.data[1][2];s.ctx.prepararSistema();
+  assert.equal(access.data[0][5],'pinLookup');assert.equal(s.post('login',{pin:'4826'}).rifaId,'test');
+  assert.equal(access.data[1][2],hash);assert.equal(access.data[1][5].length,64);
+});
+test('ambiguous legacy PINs never select an arbitrary card; developer can resolve the conflict',()=>{
+  const s=server(),a=ordered(s),dev=s.login();s.post('approveCard',{rifaId:a.p.rifaId},dev);
+  const rows=s.sheets.get('RifaPro_Accesos').data,legacy=rows.find(r=>r[0]==='test'),other=rows.find(r=>r[0]===a.p.rifaId);
+  other[1]=legacy[1];other[2]=legacy[2];other[5]='';legacy[5]='';
+  assert.equal(s.post('login',{pin:'4826'}).code,'PIN_CONFLICT');
+  assert(s.post('developerDashboard',{},dev).cards.filter(c=>c.pinConflict).length===2);
+  assert.equal(s.post('setOwnerPin',{rifaId:a.p.rifaId,pin:'7931'},dev).ok,true);
+  assert.equal(s.post('login',{pin:'7931'}).rifaId,a.p.rifaId);assert.equal(s.post('login',{pin:'4826'}).rifaId,'test');
+});
+test('global PIN miss throttling survives cache loss and a successful known login',()=>{
+  const s=server();for(let i=0;i<7;i++)assert.equal(s.post('login',{pin:'9999'}).code,'INVALID_PIN');
+  assert.equal(s.post('login',{pin:'4826'}).role,'owner');assert.equal(s.post('login',{pin:'9999'}).code,'INVALID_PIN');
+  s.cache.clear();assert.equal(s.post('login',{pin:'4826'}).code,'RATE_LIMIT');assert.equal(s.post('developerLogin',{password:'7462'}).role,'developer');
+});
+test('owner PIN change preserves numbers and rejects changes to another owner',()=>{
+  const s=server(),a=ordered(s),b=ordered(s),dev=s.login();s.post('approveCard',{rifaId:a.p.rifaId},dev);
+  s.post('updateNumber',reservation({rifaId:a.p.rifaId,revision:0,estado:'pagado',paymentMethod:'transferencia'}),a.token);
+  assert.equal(s.post('setOwnerPin',{rifaId:b.p.rifaId,pin:'7931'},a.token).code,'FORBIDDEN');
+  assert.equal(s.post('setOwnerPin',{rifaId:a.p.rifaId,pin:'7931'},a.token).ok,true);
+  assert.equal(s.post('login',{pin:a.p.adminPin}).code,'INVALID_PIN');
+  const owner=s.post('login',{pin:'7931'});assert.equal(s.post('adminSnapshot',{},owner.token).summary.transferencia,a.p.precio);
 });

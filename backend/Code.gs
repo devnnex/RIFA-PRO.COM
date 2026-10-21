@@ -9,10 +9,10 @@ const TABLES = {
   entries: { name: SHEET_NAME, headers: HEADERS },
   requests: { name: "RifaPro_v2_Solicitudes", headers: ["requestId", "action", "rifaId", "numeroId", "result"] },
   orders: { name: "RifaPro_Cartones", headers: ["rifaId", "ownerHash", "estado", "createdAt", "updatedAt", "datos", "contacto", "importe"] },
-  access: { name: "RifaPro_Accesos", headers: ["rifaId", "pinSalt", "pinHash", "failedAttempts", "lockedUntil"] }
+  access: { name: "RifaPro_Accesos", headers: ["rifaId", "pinSalt", "pinHash", "failedAttempts", "lockedUntil", "pinLookup"] }
 };
 const SESSION_SECONDS = 1800;
-const CAPABILITIES = { snapshot: true, editPrize: true, batchNumbers: true, writeSnapshot: true, independentRaffles: true, expiry: true, developerPanel: true, ownerPin: true };
+const CAPABILITIES = { snapshot: true, editPrize: true, batchNumbers: true, writeSnapshot: true, independentRaffles: true, expiry: true, developerPanel: true, ownerPin: true, pinOnlyLogin: true };
 const CARD_PRICE = 1000;
 let principal = null;
 let requestContext = null;
@@ -373,20 +373,35 @@ function newSession_(actor) {
 }
 function login_(pin, requestedId) {
   return locked_(() => {
-    const id = String(requestedId || "");
-    if (!id) fail_("Abre el enlace de tu cartón para ingresar con tu PIN.", "RAFFLE_REQUIRED");
-    const access = accessRow_(id);
-    if (!access) fail_("Este cartón aún no tiene PIN. Usa su acceso privado anterior para configurarlo.", "PIN_NOT_SET");
-    const row = access.values, until = Number(row[4]) || 0;
+    const props = PropertiesService.getScriptProperties(), scope = String(requestedId || "");
+    const throttleKey = "OWNER_LOGIN_THROTTLE";
+    const throttle = JSON.parse(props.getProperty(throttleKey) || "{}");
+    if (!scope && throttle.until > Date.now()) fail_("Demasiados intentos. Espera cinco minutos para volver a entrar.", "RATE_LIMIT");
+    const lookup = /^\d{4}$/.test(String(pin || "")) ? pinHash_(pin, "global-lookup-v1") : "";
+    const matching = scope ? [accessRow_(scope)].filter(Boolean) : lookup ? rows_("access").map((row, index) => ({ row: index + 2, values: row }))
+      .filter((a) => a.values[5] ? a.values[5] === lookup : pinHash_(pin, String(a.values[1])) === String(a.values[2])) : [];
+    if (matching.length > 1) {
+      matching.forEach((a) => { a.values[5] = lookup; table_("access").getRange(a.row, 1, 1, 6).setValues([a.values]); }); SpreadsheetApp.flush();
+      fail_("Este PIN se repite en cartones anteriores. Contacta al desarrollador para actualizarlo.", "PIN_CONFLICT");
+    }
+    const access = matching[0];
+    if (!access) {
+      if (scope) fail_("Este cartón aún no tiene PIN configurado.", "PIN_NOT_SET");
+      if (!throttle.start || Date.now() - throttle.start > 300000) { throttle.start = Date.now(); throttle.attempts = 0; }
+      throttle.attempts = (throttle.attempts || 0) + 1; if (throttle.attempts >= 8) throttle.until = Date.now() + 300000;
+      props.setProperty(throttleKey, JSON.stringify(throttle));
+      fail_("PIN incorrecto. Revisa tus cuatro dígitos.", "INVALID_PIN");
+    }
+    const row = access.values, id = String(row[0]), until = Number(row[4]) || 0;
     if (until > Date.now()) fail_("Demasiados intentos. Espera cinco minutos para volver a entrar.", "RATE_LIMIT");
     if (until) { row[3] = 0; row[4] = 0; }
-    if (!/^\d{4}$/.test(String(pin || "")) || pinHash_(pin, String(row[1])) !== String(row[2])) {
+    if (!lookup || pinHash_(pin, String(row[1])) !== String(row[2])) {
       row[3] = (Number(row[3]) || 0) + 1; if (row[3] >= 8) row[4] = Date.now() + 300000;
-      table_("access").getRange(access.row, 1, 1, 5).setValues([row]); SpreadsheetApp.flush();
+      table_("access").getRange(access.row, 1, 1, row.length).setValues([row]); SpreadsheetApp.flush();
       fail_("PIN incorrecto para este cartón.", "INVALID_PIN");
     }
-    row[3] = 0; row[4] = 0;
-    table_("access").getRange(access.row, 1, 1, 5).setValues([row]);
+    row[3] = 0; row[4] = 0; row[5] = lookup;
+    table_("access").getRange(access.row, 1, 1, 6).setValues([row]);
     const order = orders_().find((o) => o.rifaId === id);
     if (order && order.status !== "active") fail_("Tu cartón estará disponible cuando el desarrollador apruebe el pago.", "PAYMENT_PENDING");
     const rifa = raffle_(id), legacy = !order;
@@ -396,9 +411,8 @@ function login_(pin, requestedId) {
 }
 function developerLogin_(password) {
   return locked_(() => {
-    const props = PropertiesService.getScriptProperties(), expected = props.getProperty("DEVELOPER_PASSWORD");
-    if (!expected || expected.length < 8) fail_("Configura DEVELOPER_PASSWORD con al menos 8 caracteres en las propiedades del servidor.");
-    if (expected === props.getProperty("ADMIN_PIN")) fail_("La contraseña del desarrollador debe ser distinta a la de una rifa.");
+    const props = PropertiesService.getScriptProperties(), expected = props.getProperty("DEVELOPER_PIN");
+    if (!/^\d{4}$/.test(String(expected || ""))) fail_("Configura DEVELOPER_PIN con cuatro dígitos en las propiedades del servidor.");
     verifyCredential_(password, expected, "DEVELOPER_LOGIN_THROTTLE");
     return newSession_({ role: "developer" });
   });
@@ -485,13 +499,14 @@ function updatePrize_(p) {
 
 function platformOnly_() { if (principal?.role !== "developer") fail_("Esta acción corresponde al desarrollador de la plataforma.", "FORBIDDEN"); }
 function developerDashboard_() {
-  const orders = orders_(), rifas = readRaffles_();
+  const orders = orders_(), rifas = readRaffles_(), accesses = rows_("access");
   const cards = orders.map((o) => {
     const current = rifas.find((r) => r.rifaId === o.rifaId);
     return { ...orderView_(o), titulo: current ? current.titulo : o.draft.titulo,
       expired: Date.now() >= Date.parse(expiry_(o.draft.fecha)), legacy: false };
   });
   rifas.filter((r) => !orders.some((o) => o.rifaId === r.rifaId)).forEach((r) => cards.push({ rifaId: r.rifaId, titulo: r.titulo, fecha: r.fecha, status: "active", expired: r.expired, legacy: true, amount: 0, contact: "", expiresAt: r.expiresAt }));
+  cards.forEach((card) => { const access = accesses.find((a) => String(a[0]) === card.rifaId); card.pinConflict = Boolean(access?.[5] && accesses.filter((a) => a[5] === access[5]).length > 1); });
   return { ok: true, capabilities: CAPABILITIES, cards };
 }
 function orders_() {
@@ -504,29 +519,41 @@ function accessRow_(id) {
   return index < 0 ? null : { row: index + 2, values: rows_("access")[index] };
 }
 function pinPepper_() {
+  if (requestContext?.pinPepper) return requestContext.pinPepper;
   const props = PropertiesService.getScriptProperties();
   let pepper = props.getProperty("OWNER_PIN_PEPPER");
   if (!pepper) { pepper = Utilities.getUuid() + Utilities.getUuid(); props.setProperty("OWNER_PIN_PEPPER", pepper); }
+  if (requestContext) requestContext.pinPepper = pepper;
   return pepper;
 }
 function pinHash_(pin, salt) {
   return Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, salt + ":" + String(pin) + ":" + pinPepper_(), Utilities.Charset.UTF_8)
     .map((b) => (b & 255).toString(16).padStart(2, "0")).join("");
 }
-function savePin_(id, pin) {
+function assertPinAvailable_(id, pin) {
   if (!/^\d{4}$/.test(String(pin || ""))) fail_("Elige un PIN de exactamente cuatro dígitos.", "INVALID_PIN_FORMAT");
-  if (accessRow_(id)) return; // Creation retries must never replace a saved credential.
-  const salt = Utilities.getUuid(), row = [id, salt, pinHash_(pin, salt), 0, 0];
+  const lookup = pinHash_(pin, "global-lookup-v1");
+  const occupied = rows_("access").some((row) => String(row[0]) !== String(id) && (row[5] ? row[5] === lookup : pinHash_(pin, String(row[1])) === String(row[2])));
+  if (occupied || String(pin) === PropertiesService.getScriptProperties().getProperty("DEVELOPER_PIN")) fail_("Ese PIN ya está ocupado. Elige otros cuatro dígitos para tu cartón.", "PIN_IN_USE");
+  return lookup;
+}
+function savePin_(id, pin) {
+  if (accessRow_(id)) return;
+  const lookup = assertPinAvailable_(id, pin), salt = Utilities.getUuid(), row = [id, salt, pinHash_(pin, salt), 0, 0, lookup];
   table_("access").appendRow(row); rows_("access").push(row);
 }
 function setOwnerPin_(p) {
   return locked_(() => {
-    if (principal?.role !== "owner" || String(p.rifaId) !== principal.rifaId) fail_("Solo el dueño puede configurar el PIN de su cartón.", "FORBIDDEN");
-    if (accessRow_(p.rifaId)) fail_("Este cartón ya tiene un PIN configurado.", "PIN_ALREADY_SET");
+    if (principal?.role !== "developer" && (principal?.role !== "owner" || String(p.rifaId) !== principal.rifaId)) fail_("Solo el dueño o el desarrollador pueden configurar este PIN.", "FORBIDDEN");
     const order = orders_().find((o) => o.rifaId === p.rifaId);
-    if (!order || order.status === "deleted") fail_("Este cartón no está disponible.", "NOT_FOUND");
-    savePin_(p.rifaId, p.pin);
-    return { ok: true, order: orderView_(order) };
+    if (order?.status === "deleted") fail_("Este cartón no está disponible.", "NOT_FOUND");
+    const legacy = !order ? raffle_(p.rifaId) : null;
+    const lookup = assertPinAvailable_(p.rifaId, p.pin), access = accessRow_(p.rifaId);
+    if (access) {
+      const salt = Utilities.getUuid(), row = [p.rifaId, salt, pinHash_(p.pin, salt), 0, 0, lookup];
+      table_("access").getRange(access.row, 1, 1, 6).setValues([row]); requestContext.rows.access[access.row - 2] = row;
+    } else savePin_(p.rifaId, p.pin);
+    return { ok: true, order: order ? orderView_(order) : { rifaId: legacy.rifaId, titulo: legacy.titulo, status: "active", legacy: true, hasPin: true } };
   });
 }
 function secretHash_(secret) {
@@ -566,7 +593,7 @@ function orderCard_(p) {
     const draw = Date.parse(draft.fecha + "T00:00:00-05:00");
     if (!Number.isFinite(draw) || new Date(draw).toISOString().slice(0, 10) !== draft.fecha) fail_("La fecha del sorteo no es válida.");
     assertOpen_({ expiresAt: expiry_(draft.fecha) });
-    if (!/^\d{4}$/.test(String(p.adminPin || ""))) fail_("Elige un PIN de exactamente cuatro dígitos.", "INVALID_PIN_FORMAT");
+    assertPinAvailable_(p.rifaId, p.adminPin);
     const now = new Date().toISOString(), row = [p.rifaId, hash, "pending", now, now, JSON.stringify(draft), safeCell_(contact), CARD_PRICE];
     table_("orders").appendRow(row); rows_("orders").push(row);
     savePin_(p.rifaId, p.adminPin);
