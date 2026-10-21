@@ -24,7 +24,9 @@ function normalizeRaffle(raw) {
     precio: Number(raw.precio) || 0, cantidad: Math.min(100000, Math.max(2, Number(raw.cantidad) || 100)),
     premio: prizeText(raw.premio || ""), loteria: String(raw.loteria || ""), fecha: String(raw.fecha || ""),
     hora: String(raw.hora || ""), responsable: String(raw.responsable || ""), condiciones: String(raw.condiciones || ""), revision: Number(raw.revision) || 0,
-    independiente: Boolean(raw.independiente), expiresAt: raw.expiresAt || null, expired: Boolean(raw.expired) };
+    independiente: Boolean(raw.independiente), expiresAt: raw.expiresAt || null, expired: Boolean(raw.expired),
+    winner: raw.winner && /^\d{1,6}$/.test(String(raw.winner.numeroId)) && raw.winner.nombre ? {
+      numeroId: String(raw.winner.numeroId), nombre: String(raw.winner.nombre), publishedAt: String(raw.winner.publishedAt || ""), revision: Number(raw.winner.revision) || 0 } : null };
 }
 const raffleExpired = (r) => Boolean(r && (r.expired || (r.expiresAt && Date.now() >= Date.parse(r.expiresAt))));
 function formatDate(raw, short = false) {
@@ -96,7 +98,7 @@ function savePublicCache() {
   try {
     const confirmed = new Map(state.rifas.map((r) => [r.id, r]));
     for (const [id, op] of state.pendingRaffles) { if (op.before) confirmed.set(id, op.before); else confirmed.delete(id); }
-    localStorage.setItem(CACHE_KEY, JSON.stringify({ rifas: [...confirmed.values()] }));
+    localStorage.setItem(CACHE_KEY, JSON.stringify({ rifas: [...confirmed.values()].map(({ winner, ...rifa }) => rifa) }));
   } catch { /* Storage may be full. */ }
 }
 function jsonp(action, params = {}) {
@@ -202,7 +204,7 @@ function renderTicket() {
       return;
     }
     const requested = new URL(location.href).searchParams.get("rifa");
-    markup("infoRifa", requested ? '<div class="empty-state"><span class="note-mark" aria-hidden="true">✧</span><h2>Este cartón no está disponible.</h2><p>Comprueba el enlace con la persona responsable. Los cartones nuevos estarán disponibles después de aprobar su pago.</p></div>' : '<div class="empty-state"><span class="note-mark" aria-hidden="true">✧</span><h2>Tu rifa. Tu propio espacio.</h2><p>Crea un cartón por $1.000 COP. Tendrás un enlace para tus participantes y un acceso privado para gestionar números y pagos. Si te invitaron a participar, abre el enlace de esa rifa.</p></div>');
+    markup("infoRifa", requested ? '<div class="empty-state"><span class="note-mark" aria-hidden="true">✧</span><h2>Este cartón no está disponible.</h2><p>Comprueba el enlace con la persona responsable. Los cartones nuevos estarán disponibles después de aprobar su pago.</p></div>' : '<div class="empty-state"><span class="note-mark" aria-hidden="true">✧</span><h2>Tu rifa. Tu propio espacio.</h2><p>Crea un cartón por $3.500 COP. Tendrás un enlace para tus participantes y un acceso privado para gestionar números y pagos. Si te invitaron a participar, abre el enlace de esa rifa.</p></div>');
     return;
   }
   const prize = prizeText(r.premio || r.titulo);
@@ -256,7 +258,7 @@ function renderAdmin() {
   const summary = admin ? state.summary : null;
   $("adminSummary").hidden = !summary;
   for (const [id, label, value] of [["kpiLibres", "Libres", summary?.libres], ["kpiApartados", "Apartados", summary?.apartados], ["kpiPagados", "Pagados", summary?.pagados], ["kpiRecaudado", "Recaudado", summary ? money(summary.recaudado) : ""]]) {
-    $(id).innerHTML = summary ? `<strong>${label}</strong>${escapeHTML(value)}` : "";
+    markup(id, summary ? `<strong>${label}</strong>${escapeHTML(value)}` : "");
   }
   $("totalTransfer").textContent = summary ? money(summary.transferencia) : "";
   $("totalCash").textContent = summary ? money(summary.efectivo) : "";
@@ -470,15 +472,11 @@ async function shareRaffle() {
   await copyText(url.href, "Enlace copiado. Envíalo a tus clientes; entrarán como participantes.");
 }
 function setupPWA() {
-  if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js").catch(() => {});
+  setupAppUpdates();
   window.addEventListener("beforeinstallprompt", (event) => { event.preventDefault(); state.installPrompt = event; $("installButton").hidden = false; });
   window.addEventListener("appinstalled", () => { state.installPrompt = null; $("installButton").hidden = true; toast("Rifa Pro ya está en tu inicio."); });
-  const ios = /iPad|iPhone|iPod/.test(navigator.userAgent);
-  if (ios && !window.matchMedia("(display-mode: standalone)").matches && !navigator.standalone) $("installButton").hidden = false;
-  $("installButton").addEventListener("click", async () => {
-    if (!state.installPrompt) { notice("Rifa Pro en tu inicio", "En Safari, toca Compartir y luego Agregar a inicio. El icono de tu rifa quedará siempre a mano."); return; }
-    const prompt = state.installPrompt; state.installPrompt = null; await prompt.prompt(); await prompt.userChoice; $("installButton").hidden = true;
-  });
+  $("installButton").hidden = window.matchMedia("(display-mode: standalone)").matches || Boolean(navigator.standalone);
+  $("installButton").addEventListener("click", showInstallGuide);
 }
 function init() {
   try { const cached = JSON.parse(localStorage.getItem(CACHE_KEY)); if (Array.isArray(cached?.rifas)) state.rifas = cached.rifas.map(normalizeRaffle); setTheme(localStorage.getItem("rifapro.theme") === "dark"); } catch { /* Start clean. */ }

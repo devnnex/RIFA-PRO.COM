@@ -35,7 +35,9 @@ function renderCartones() {
   $("developerPanel").hidden = !developerPage;
   $("developerLoginForm").hidden = isPlatform();
   $("ordersPanel").hidden = !(developerPage && isPlatform());
-  if ($("ordersPanel").hidden) { $("ordersList").replaceChildren(); $("developerStats").replaceChildren(); }
+  if ($("ordersPanel").hidden) {
+    for (const id of ["ordersList", "developerStats"]) { if ($(id).childNodes.length) $(id).replaceChildren(); state.viewCache.delete(id); }
+  }
   document.querySelector(".workspace").hidden = developerPage;
   document.querySelector(".page-intro").hidden = developerPage;
   if (developerPage) status(isPlatform() ? "Panel del desarrollador" : "Acceso privado", "online");
@@ -63,7 +65,7 @@ function startPaidCard() {
   $("raffleDialogTitle").textContent = "Tu rifa, tu propio espacio.";
   $("creatorFields").hidden = false; $("creatorPhone").required = true;
   $("creatorPin").required = true; $("creatorPinConfirm").required = true;
-  $("createRaffleButton").textContent = "Continuar al pago · $1.000 →";
+  $("createRaffleButton").textContent = "Continuar al pago · $3.500 →";
   $("raffleError").textContent = "";
   resetCreation();
   if (!cardDraft) cardDraft = { rifaId: uuid(), ownerKey: uuid() + uuid() };
@@ -73,11 +75,14 @@ function rafflePublicLink(id) { const url = new URL(location.href); url.search =
 function cardOwnerLink(id, key) { const url = rafflePublicLink(id); url.hash = "acceso=" + key; return url.href; }
 function currentCardLink() { return state.ownerOrder?.hasPin ? rafflePublicLink(state.ownerOrder.rifaId).href : privateCardLink; }
 function fillPayment(order) {
+  const fee = currencyText(order.amount || 3500);
+  $("cardFeeAmount").textContent = fee; $("paymentTransferTitle").textContent = "Transfiere " + fee;
+  $("qrPaymentAmount").textContent = "Elkin Rangel · " + fee + " COP";
   $("paymentReference").textContent = cardReference(order);
   $("cardPaymentStatus").textContent = paymentLabels[order.status] || "Por confirmar";
   $("privateAccessLink").value = order.hasPin ? rafflePublicLink(order.rifaId).href : privateCardLink;
   $("privateAccessSection").hidden = !$("privateAccessLink").value;
-  $("paidWhatsApp").href = "https://wa.me/" + RECEIPT_PHONE + "?text=" + encodeURIComponent("Hola, te escribo porque ya pagué mi cartón de rifa virtual. Te dejo el comprobante aquí:\n\nCartón: " + order.titulo + "\nReferencia: " + cardReference(order) + "\nValor: $1.000 COP.\nAdjuntaré el comprobante en este chat.");
+  $("paidWhatsApp").href = "https://wa.me/" + RECEIPT_PHONE + "?text=" + encodeURIComponent("Hola, te escribo porque ya pagué mi cartón de rifa virtual. Te dejo el comprobante aquí:\n\nCartón: " + order.titulo + "\nReferencia: " + cardReference(order) + "\nValor: " + fee + " COP.\nAdjuntaré el comprobante en este chat.");
   $("paidWhatsApp").hidden = order.status === "active" || order.status === "deleted";
   $("enterMyCard").hidden = order.status !== "active";
   if (!$("paymentDialog").open) $("paymentDialog").showModal();
@@ -99,7 +104,7 @@ async function createPaidCard() {
     const session = await api("ownerLogin", { rifaId: payload.rifaId, ownerKey: payload.ownerKey });
     useOwnerSession(session); $("raffleDialog").close(); $("creatorPin").value = ""; $("creatorPinConfirm").value = ""; fillPayment(result.order); cardDraft = null;
   } catch (error) { $("raffleError").textContent = error.message + " Puedes reintentar sin crear otro cartón."; }
-  finally { button.disabled = false; button.textContent = "Continuar al pago · $1.000 →"; }
+  finally { button.disabled = false; button.textContent = "Continuar al pago · $3.500 →"; }
 }
 function useOwnerSession(result) {
   if (result.role !== "owner" || !result.rifaId) throw new Error("El servidor no confirmó el acceso a este cartón.");
@@ -144,20 +149,20 @@ async function copyText(value, message) {
 function downloadText(name, text, type = "text/plain;charset=utf-8") {
   const url = URL.createObjectURL(new Blob([text], { type })), a = document.createElement("a"); a.href = url; a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
-async function loadOrders() {
+async function loadOrders(event) {
   if (!isPlatform() || ordersLoading) return;
-  const token = state.token; ordersLoading = true; $("refreshOrders").disabled = true;
+  const token = state.token; ordersLoading = true; if (event?.type === "click") $("refreshOrders").disabled = true;
   try {
     const result = await api("developerDashboard", {}, true); if (state.token !== token) return;
     state.capabilities = result.capabilities || state.capabilities;
     const cards = result.cards;
     const pending = cards.filter((o) => ["pending", "reviewing"].includes(o.status) && !o.expired);
     const active = cards.filter((o) => o.status === "active" && !o.expired);
-    $("developerStats").innerHTML = [["Cartones", cards.length],["Por aprobar",pending.length],["Activos",active.length],["Vencidos",cards.filter((o) => o.expired && o.status !== "deleted").length]].map(([label,count]) => `<article class="kpi"><strong>${label}</strong>${count}</article>`).join("");
+    markup("developerStats", [["Cartones", cards.length],["Por aprobar",pending.length],["Activos",active.length],["Vencidos",cards.filter((o) => o.expired && o.status !== "deleted").length]].map(([label,count]) => `<article class="kpi"><strong>${label}</strong>${count}</article>`).join(""));
     const filter = $("developerFilter").value;
     const visible = cards.filter((o) => filter === "all" || (filter === "pending" ? pending.includes(o) : filter === "active" ? active.includes(o) : o.expired && o.status !== "deleted"));
-    $("ordersList").innerHTML = visible.length ? visible.map((o) => `<article class="order-row"><div><strong>${escapeHTML(o.titulo)}</strong><small>${escapeHTML(o.contact || "Rifa anterior")} · <span class="card-status ${o.status}">${escapeHTML(o.status === "deleted" ? "Eliminado" : o.expired ? "Vencido" : paymentLabels[o.status])}</span></small><small>Sorteo: ${escapeHTML(formatDate(o.fecha))}${o.legacy ? " · Cartón anterior" : " · $1.000 COP"}</small><small class="order-id">${escapeHTML(o.reference || (o.legacy ? "Cartón anterior" : cardReference(o)))}</small>${o.pinConflict ? '<small class="form-error">PIN repetido en una versión anterior. Asigna uno nuevo.</small>' : ''}</div><div class="order-actions">${pending.includes(o) ? `<button type="button" class="button button-outline button-small" data-approve-card="${escapeHTML(o.rifaId)}">Aprobar $1.000</button>` : o.status === "active" ? `<a class="button button-outline button-small" target="_blank" rel="noopener noreferrer" href="${escapeHTML(rafflePublicLink(o.rifaId).href)}">Ver rifa ↗</a>` : ""}${o.status !== "deleted" ? `<button type="button" class="button button-quiet button-small" data-reset-pin="${escapeHTML(o.rifaId)}">Cambiar PIN</button>` : ''}</div></article>`).join("") : '<p class="muted">No hay cartones en este estado.</p>';
-  } catch (error) { toast(error.message); }
+    markup("ordersList", visible.length ? visible.map((o) => `<article class="order-row"><div><strong>${escapeHTML(o.titulo)}</strong><small>${escapeHTML(o.contact || "Rifa anterior")} · <span class="card-status ${o.status}">${escapeHTML(o.status === "deleted" ? "Eliminado" : o.expired ? "Vencido" : paymentLabels[o.status])}</span></small><small>Sorteo: ${escapeHTML(formatDate(o.fecha))}${o.legacy ? " · Cartón anterior" : " · " + currencyText(o.amount) + " COP"}</small><small class="order-id">${escapeHTML(o.reference || (o.legacy ? "Cartón anterior" : cardReference(o)))}</small>${o.pinConflict ? '<small class="form-error">PIN repetido en una versión anterior. Asigna uno nuevo.</small>' : ''}</div><div class="order-actions">${pending.includes(o) ? `<button type="button" class="button button-outline button-small" data-approve-card="${escapeHTML(o.rifaId)}" data-card-amount="${Number(o.amount)}">Aprobar ${currencyText(o.amount)}</button>` : o.status === "active" ? `<a class="button button-outline button-small" target="_blank" rel="noopener noreferrer" href="${escapeHTML(rafflePublicLink(o.rifaId).href)}">Ver rifa ↗</a>` : ""}${o.status !== "deleted" ? `<button type="button" class="button button-quiet button-small" data-reset-pin="${escapeHTML(o.rifaId)}">Cambiar PIN</button>` : ''}</div></article>`).join("") : '<p class="muted">No hay cartones en este estado.</p>');
+  } catch (error) { status("No se pudo actualizar · Conservamos la vista anterior", "error"); if (event?.type === "click") toast(error.message); }
   finally { ordersLoading = false; $("refreshOrders").disabled = false; }
 }
 function initCartones() {
@@ -198,7 +203,7 @@ function initCartones() {
     const reset = event.target.closest("[data-reset-pin]");
     if (reset && isPlatform()) { pinTarget = reset.dataset.resetPin; $("pinSetupError").textContent = ""; $("pinSetupForm").reset(); $("pinSetupDialog").showModal(); return; }
     const button = event.target.closest("[data-approve-card]"); if (!button || button.disabled) return;
-    if (!await confirmAction("¿Confirmas que recibiste $1.000?", "Aprueba solo después de verificar la transferencia y el comprobante de esta referencia. Se activará el enlace público del cartón.", "Verificado · Activar cartón")) return;
+    if (!await confirmAction("¿Confirmas que recibiste " + currencyText(button.dataset.cardAmount) + "?", "Aprueba solo después de verificar la transferencia y el comprobante de esta referencia. Se activará el enlace público del cartón.", "Verificado · Activar cartón")) return;
     button.disabled = true; button.textContent = "Activando…";
     try { await api("approveCard", { rifaId: button.dataset.approveCard }, true); toast("Cartón activado."); await loadOrders(); refresh(); } catch (error) { toast(error.message); button.disabled = false; button.textContent = "Reintentar activación"; }
   });

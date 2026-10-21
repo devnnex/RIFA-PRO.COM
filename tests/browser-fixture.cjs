@@ -8,7 +8,7 @@ exports.bootstrap = function () {
   const data = JSON.parse(sessionStorage.getItem('qa.service') || 'null') || initial;
   const { catalog, orders } = data, sessions = new Map();
   const persist = () => sessionStorage.setItem('qa.service', JSON.stringify(data));
-  const capabilities = {snapshot:true,editPrize:true,batchNumbers:true,writeSnapshot:true,independentRaffles:true,expiry:true,developerPanel:true,ownerPin:true,pinOnlyLogin:true};
+  const capabilities = {snapshot:true,editPrize:true,batchNumbers:true,writeSnapshot:true,independentRaffles:true,expiry:true,developerPanel:true,ownerPin:true,pinOnlyLogin:true,publicPayments:true,publishWinner:true};
   window.__qa = { calls:[], delay:120, rejectPrize:false, hold:false, releases:[] };
   const records = (id) => data.records[id] ||= [];
   const publicRecord = (n) => ({numeroId:n.numeroId,estado:n.estado,paymentMethod:n.estado==='pagado'?n.paymentMethod||'':'',clienteNombre:n.clienteNombre,updatedAt:n.updatedAt});
@@ -53,16 +53,17 @@ exports.bootstrap = function () {
     }
     if(action==='developerLogin')result=p.password==='7462'?session({role:'developer'}):{ok:false,code:'INVALID_PIN',error:'Contraseña incorrecta.'};
     if(['developerDashboard','listOrders','approveCard','createRaffle'].includes(action)&&actor?.role!=='developer')return new Response(JSON.stringify(denied()));
-    if(['adminSnapshot','updateNumber','releaseNumber','updatePrize','deleteRifa'].includes(action)&&actor?.role!=='developer'&&(!actor||p.rifaId&&p.rifaId!==actor.rifaId))return new Response(JSON.stringify(denied()));
+    if(['adminSnapshot','updateNumber','releaseNumber','updatePrize','deleteRifa','publishWinner'].includes(action)&&actor?.role!=='developer'&&(!actor||p.rifaId&&p.rifaId!==actor.rifaId))return new Response(JSON.stringify(denied()));
     if(action==='adminSnapshot'){const rifas=actor.role==='developer'?catalog:catalog.filter(r=>r.rifaId===actor.rifaId),id=rifas.find(r=>r.rifaId===p.rifaId)?.rifaId||rifas[0]?.rifaId;result={ok:true,protocol:2,capabilities,rifas,rifaId:id,data:records(id),summary:summary(id)};}
     if(['reserveNumber','updateNumber','releaseNumber'].includes(action))result=edit(action,p);
     if(action==='batchNumbers')result={ok:true,results:p.changes.map(change=>({requestId:change.payload.requestId,...(actor?.rifaId===change.payload.rifaId?edit(change.action,change.payload):denied())}))};
+    if(action==='publishWinner'){const r=catalog.find(r=>r.rifaId===p.rifaId),n=records(p.rifaId).find(n=>Number(n.numeroId)===Number(p.numeroId));r.winner={numeroId:n.numeroId,nombre:n.clienteNombre,publishedAt:new Date().toISOString(),revision:(r.winner?.revision||0)+1};result={ok:true,rifaId:p.rifaId,winner:r.winner};}
     if(action==='updatePrize'){
       if(window.__qa.rejectPrize){window.__qa.rejectPrize=false;result={ok:false,code:'STALE',error:'El premio cambió en otra sesión.'};}
       else{const r=catalog.find(r=>r.rifaId===p.rifaId);Object.assign(r,{premio:p.premio,titulo:p.titulo,revision:r.revision+1});result={ok:true,rifa:r};}
     }
     if(action==='deleteRifa'){const i=catalog.findIndex(r=>r.rifaId===p.rifaId);if(i>=0)catalog.splice(i,1);const o=orders.find(o=>o.rifaId===p.rifaId);if(o)o.status='deleted';}
-    if(action==='orderCard'){let o=orders.find(o=>o.rifaId===p.rifaId);if(!o){o={...p,status:'pending',amount:1000};orders.push(o);}result={ok:true,order:orderView(o)};}
+    if(action==='orderCard'){let o=orders.find(o=>o.rifaId===p.rifaId);if(!o){o={...p,status:'pending',amount:3500};orders.push(o);}result={ok:true,order:orderView(o)};}
     if(action==='ownerLogin'){const o=orders.find(o=>o.rifaId===p.rifaId&&o.ownerKey===p.ownerKey);result=o?session({role:'owner',rifaId:o.rifaId},orderView(o)):{ok:false,code:'INVALID_KEY',error:'El enlace privado no corresponde.'};}
     if(action==='setOwnerPin'){const o=orders.find(o=>o.rifaId===p.rifaId);if(actor?.role!=='developer'&&actor?.rifaId!==p.rifaId)result=denied();else{o.adminPin=p.pin;result={ok:true,order:orderView(o)};}}
     if(['ownerStatus','reportPayment'].includes(action)){const o=ownerOrder();if(action==='reportPayment'&&o.status==='pending')o.status='reviewing';result={ok:true,order:actor.legacy?{rifaId:actor.rifaId,status:'active',legacy:true}:orderView(o)};}

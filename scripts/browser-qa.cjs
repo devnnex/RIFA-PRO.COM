@@ -48,6 +48,14 @@ const fixture = '(' + require('../tests/browser-fixture.cjs').bootstrap.toString
     await evaluate('refresh()');assert(await evaluate('window.__stableTile===document.querySelector(".numero")'));
     assert.equal(await evaluate('window.__qa.calls.filter(c=>c.action==="getSnapshot").length'),1);
     await screenshot('desktop-public');
+    // Installation help uses the right device steps and the approved support text.
+    await click('#installButton');assert(await evaluate('document.getElementById("installDialog").open'));
+    assert((await evaluate('document.getElementById("chromeInstallSteps").textContent')).includes('Instalar página como aplicación'));
+    const support=await evaluate('(()=>{const u=new URL(document.getElementById("installSupport").href);return {phone:u.pathname,message:u.searchParams.get("text")}})()');
+    assert.equal(support.phone,'/573246394689');assert.equal(support.message,'Hola, equipo de Rifa Pro 👋 Intenté agregar la app a mi pantalla de inicio, pero no pude completar el proceso.');
+    await click('[data-install-browser="safari"]');await delay(150);assert((await evaluate('document.getElementById("safariInstall").textContent')).includes('Ver más'));
+    assert((await evaluate('document.getElementById("safariInstall").textContent')).includes('abajo a la derecha'));await screenshot('install-safari-help');
+    await click('[data-close="installDialog"]');
     await click('[data-number="07"]');await set('#clienteNombre','Pedro QA');await set('#clienteTelefono','3001234567');
     const instant=await evaluate('(()=>{const start=performance.now();document.getElementById("saveNumberButton").click();return {ms:performance.now()-start,closed:!document.getElementById("numberDialog").open,pending:document.querySelector(\'[data-number="07"]\').classList.contains("pending")}})()');
     assert(instant.closed && instant.pending && instant.ms<100,JSON.stringify(instant));
@@ -56,6 +64,8 @@ const fixture = '(' + require('../tests/browser-fixture.cjs').bootstrap.toString
     await wait('document.getElementById("noticeDialog").open');assert((await evaluate('document.getElementById("noticeMessage").textContent')).includes('Marta'));await click('[data-close="noticeDialog"]');
     await evaluate('openPinLogin(false)');assert(await evaluate('document.getElementById("adminDialog").open'));await set('#pinInput','9999');await click('#loginButton');await wait('document.getElementById("adminError").textContent.includes("incorrecto")');
     assert(await evaluate('document.getElementById("adminSummary").hidden'));await set('#pinInput','4826');await click('#loginButton');await wait('!document.getElementById("adminSummary").hidden');
+    await evaluate('window.__stableKpi=document.getElementById("kpiLibres").firstElementChild');await evaluate('refresh()');
+    assert(await evaluate('window.__stableKpi===document.getElementById("kpiLibres").firstElementChild'));
     const prepare=async(n,method)=>{await click('[data-number="'+n+'"]');await set('#clienteNombre','Cliente '+n);await set('#clienteTelefono','3001234567');await click('[data-state="pagado"]');if(method)await click('input[value="'+method+'"]');};
     await click('#themeToggle');
     await wait(`getComputedStyle(document.querySelector('[data-number="01"]')).backgroundColor==='rgb(67, 38, 83)'`);
@@ -182,6 +192,9 @@ const fixture = '(' + require('../tests/browser-fixture.cjs').bootstrap.toString
     assert.equal(await evaluate('document.querySelectorAll(".order-row").length'),2);
     await send('Emulation.setDeviceMetricsOverride',{width:1440,height:1100,deviceScaleFactor:1,mobile:false});
     await screenshot('developer-dashboard-desktop');
+    await evaluate('window.__stableOrder=document.querySelector(".order-row");window.__stableStats=document.getElementById("developerStats").firstElementChild;window.__qa.calls=[]');
+    await evaluate('loadOrders()');
+    assert(await evaluate('window.__stableOrder===document.querySelector(".order-row")&&window.__stableStats===document.getElementById("developerStats").firstElementChild'));
     await set('#developerFilter','pending');await evaluate('document.getElementById("developerFilter").dispatchEvent(new Event("change"))');await wait('document.querySelectorAll(".order-row").length===1');
     await click('[data-approve-card]');await click('#confirmAccept');await wait('document.getElementById("ordersList").textContent.includes("No hay cartones")');
     await set('#developerFilter','active');await evaluate('document.getElementById("developerFilter").dispatchEvent(new Event("change"))');await wait('document.querySelectorAll(".order-row").length===2');
@@ -205,7 +218,20 @@ const fixture = '(' + require('../tests/browser-fixture.cjs').bootstrap.toString
     await prepare('30','efectivo');await click('#saveNumberButton');await wait('state.pending.size===0');
     assert.equal(await evaluate('state.summary.recaudado'),20000);
     if(await evaluate('document.getElementById("noticeDialog").open'))await click('[data-close="noticeDialog"]');
+    await click('#publishWinnerButton');await set('#winnerNumber','30');await evaluate('document.getElementById("winnerNumber").dispatchEvent(new Event("input"))');
+    assert.equal(await evaluate('document.getElementById("winnerNamePreview").textContent'),'Cliente 30');
+    await screenshot('winner-admin-editor');await click('#saveWinnerButton');
+    await wait('!document.getElementById("winnerEditorDialog").open&&activeRaffle().winner?.numeroId==="30"');
+    assert(await evaluate('!document.getElementById("winnerDialog").open&&document.getElementById("publishedWinner").textContent.includes("Cliente 30")'));
     await click('#adminButton');await wait('!hasSession()&&state.online');
+    await wait('document.getElementById("winnerDialog").open');
+    assert.equal(await evaluate('document.getElementById("winningNumber").textContent'),'30');
+    assert.equal(await evaluate('document.getElementById("winnerName").textContent'),'Cliente 30');
+    assert.equal(await evaluate('document.querySelectorAll("#winnerConfetti i").length'),36);
+    await screenshot('public-winner-celebration');await click('[data-close="winnerDialog"]');
+    await evaluate('refresh()');assert(await evaluate('!document.getElementById("winnerDialog").open'));
+    await send('Page.reload');await wait('typeof state!=="undefined"&&state.online&&document.getElementById("winnerDialog").open');
+    await click('[data-close="winnerDialog"]');
     assert(await evaluate('document.getElementById("shareButton").hidden&&document.getElementById("pinInput").value===""'));
     assert.equal(await evaluate('state.rifas.length'),1);
     // Returning organizers enter only their PIN from the root, restoring saved payments.
@@ -220,6 +246,7 @@ const fixture = '(' + require('../tests/browser-fixture.cjs').bootstrap.toString
     assert(await evaluate('document.querySelector(\'[data-number="30"]\').classList.contains("pagado")'));
     assert(await evaluate('window.__qa.calls.find(c=>c.action==="login").payload.rifaId===undefined'));
     await click('#adminButton');await wait('!hasSession()&&state.online');
+    if(await evaluate('document.getElementById("winnerDialog").open'))await click('[data-close="winnerDialog"]');
     for(const width of [320,375,390,768,1024]){
       await send('Emulation.setDeviceMetricsOverride',{width,height:844,deviceScaleFactor:1,mobile:width<768});await delay(120);
       assert(await evaluate('document.documentElement.scrollWidth<=innerWidth'),'horizontal overflow at '+width);
@@ -241,8 +268,12 @@ const fixture = '(' + require('../tests/browser-fixture.cjs').bootstrap.toString
     await send('Page.navigate',{url:'http://127.0.0.1:4173/RIFA-PRO.COM/'});await wait('typeof state!=="undefined"&&state.online');
     assert.equal(await evaluate('state.rifas.length'),0);assert(await evaluate('document.getElementById("numeros").hidden&&document.getElementById("developerPanel").hidden'));
     await screenshot('public-landing');
+    // Installed clients detect a new controller and offer an update without reinstalling.
+    await evaluate('navigator.serviceWorker.dispatchEvent(new Event("controllerchange"))');
+    assert(await evaluate('!document.getElementById("appUpdateNotice").hidden'));
+    await click('#applyAppUpdate');await wait('typeof state!=="undefined"&&state.online&&document.getElementById("appUpdateNotice").hidden');
     assert.equal(errors.length,0,JSON.stringify(errors));
-    log('PASS: immediate feedback '+instant.ms.toFixed(1)+'ms; stable DOM; single-request refresh; privacy; conflicts; transfer/cash; prize edits and rollback; batch writes; retry identity; participant-only shared links; two-step creation; formatted currency; header touch gestures with background locked; original QR preview/native share/failure fallback; prefetched cached PNGs; readable day/night buttons; purple Nequi in dark mode; short references; WhatsApp receipt; separate developer approval; owner PIN restore; clipboard confirmation; 320–1024 layouts; 16px inputs; PWA offline.');
+    log('PASS: immediate feedback '+instant.ms.toFixed(1)+'ms; stable DOM, admin KPIs and developer cards; single-request refresh; privacy; conflicts; transfer/cash; prize edits and rollback; batch writes; retry identity; participant-only shared links; two-step creation; formatted currency; header touch gestures with background locked; original QR preview/native share/failure fallback; prefetched cached PNGs; readable day/night buttons; purple Nequi in dark mode; short references; WhatsApp receipt; separate developer approval; owner PIN restore; clipboard confirmation; install guides and approved support message; winner publication, public celebration, no repeated polling alerts and reload; PWA update action; 320–1024 layouts; 16px inputs; PWA offline.');
     console.log('Screenshots saved in .qa/. Fixture backend only; live deployment still needs validation.');
   } finally { if(ws?.readyState===1)ws.close();browser.kill();preview.kill(); }
 })().catch((e)=>{log(e.stack);process.exitCode=1;});

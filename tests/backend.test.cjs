@@ -223,9 +223,67 @@ test('batch updates retain the cleanup behavior for duplicated legacy rows', () 
 let cardSequence = 1000;
 function card(extra={}) { return {rifaId:crypto.randomUUID(),ownerKey:crypto.randomUUID()+crypto.randomUUID(),adminPin:String(++cardSequence),contact:'3007654321',titulo:'Rifa independiente',premio:'Una bicicleta',cantidad:100,precio:5000,loteria:'Boyacá',fecha:'2099-11-01',hora:'17:00',responsable:'Organizador',...extra}; }
 function ordered(s,p=card()) { const order=s.post('orderCard',p);assert.equal(order.ok,true,JSON.stringify(order));const session=s.post('ownerLogin',{rifaId:p.rifaId,ownerKey:p.ownerKey});assert.equal(session.ok,true);return {p,token:session.token,session}; }
+
+test('winner publication requires the raffle owner and cannot cross card boundaries',()=>{
+  const s=server(),a=ordered(s),b=ordered(s),dev=s.login();
+  const p=reservation({rifaId:a.p.rifaId,revision:0});
+  assert.equal(s.post('publishWinner',p).code,'UNAUTHORIZED');
+  assert.equal(s.post('publishWinner',p,a.token).code,'PAYMENT_PENDING');
+  s.post('approveCard',{rifaId:a.p.rifaId},dev); s.post('approveCard',{rifaId:b.p.rifaId},dev);
+  s.post('reserveNumber',p);
+  assert.equal(s.post('publishWinner',p,b.token).code,'FORBIDDEN');
+  assert.equal(s.get('publishWinner',p).ok,false);
+  assert.equal(s.post('publishWinner',p,a.token).ok,true);
+  assert.equal(s.get('getSnapshot',{rifaId:b.p.rifaId}).rifas[0].winner,null);
+});
+test('winner is derived from the participant, published on its link and retries are idempotent',()=>{
+  const s=server(),token=s.post('login',{pin:'4826',rifaId:'test'}).token;
+  s.post('reserveNumber',reservation());
+  s.get('getSnapshot',{rifaId:'test'}); // Populate catalog cache before publication.
+  const p=reservation({revision:0,nombre:'Spoofed name'}),first=s.post('publishWinner',p,token);
+  assert.equal(first.ok,true);assert.equal(first.winner.numeroId,'07');assert.equal(first.winner.nombre,'Ana Pérez');
+  assert.deepEqual(s.post('publishWinner',p,token),first);
+  assert.equal(s.sheets.get('RifaPro_Ganadores').data.length,2);
+  const pub=s.get('getSnapshot',{rifaId:'test'});assert.deepEqual(pub.rifas[0].winner,first.winner);
+  assert(!JSON.stringify(pub).includes('3001234567'));assert(!JSON.stringify(pub).includes(p.requestId));
+  assert.deepEqual(s.get('getSnapshot').rifas,[]);
+});
+test('winner rejects free numbers, invalid numbers and stale changes without touching payments',()=>{
+  const s=server(),token=s.login();
+  assert.equal(s.post('publishWinner',reservation({revision:0}),token).ok,false);
+  assert.equal(s.post('publishWinner',reservation({numeroId:'999',revision:0}),token).ok,false);
+  s.post('updateNumber',reservation({estado:'pagado',paymentMethod:'efectivo',revision:0}),token);
+  const before=s.post('adminSnapshot',{rifaId:'test'},token);
+  assert.equal(s.post('publishWinner',reservation({revision:0}),token).ok,true);
+  assert.equal(s.post('publishWinner',reservation({revision:0}),token).code,'STALE');
+  const after=s.post('adminSnapshot',{rifaId:'test'},token);
+  assert.deepEqual(after.data,before.data);assert.deepEqual(after.summary,before.summary);
+});
+test('winner may be published after expiry; deletion removes only that raffle result',()=>{
+  const s=server(),token=s.post('login',{pin:'4826',rifaId:'test'}).token;
+  s.post('reserveNumber',reservation());
+  const entries=s.sheets.get('rifas').data;entries.slice(1).forEach(row=>row[10]='2000-01-01');
+  assert.equal(s.post('publishWinner',reservation({revision:0}),token).ok,true);
+  assert.equal(s.get('getSnapshot',{rifaId:'test'}).rifas[0].winner.nombre,'Ana Pérez');
+  assert.equal(s.post('deleteRifa',{rifaId:'test'},token).ok,true);
+  assert.equal(s.sheets.get('RifaPro_Ganadores').data.length,1);
+});
+test('existing raffles still load before winner table migration, which preserves original columns',()=>{
+  const s=server();s.sheets.delete('RifaPro_Ganadores');
+  assert.equal(s.get('getSnapshot',{rifaId:'test'}).ok,true);
+  s.ctx.prepararSistema();assert(s.sheets.has('RifaPro_Ganadores'));
+  assert.equal(s.sheets.get('rifas').data[0].length,17);
+});
+test('previous orders keep their quoted fee while new cards cost 3500',()=>{
+  const s=server(),a=ordered(s),dev=s.login();
+  s.sheets.get('RifaPro_Cartones').data[1][7]=1000;
+  assert.equal(s.post('ownerStatus',{},a.token).order.amount,1000);
+  assert.equal(s.post('approveCard',{rifaId:a.p.rifaId},dev).ok,true);
+  const b=ordered(s);assert.equal(b.session.order.amount,3500);
+});
 test('creating a card charges a fixed server amount and stores only a hashed owner key',()=>{
   const s=server(),p=card({amount:0,status:'active'}),a=ordered(s,p);
-  assert.equal(a.session.order.amount,1000);assert.equal(a.session.order.status,'pending');
+  assert.equal(a.session.order.amount,3500);assert.equal(a.session.order.status,'pending');
   assert(!JSON.stringify(s.sheets.get('RifaPro_Cartones').data).includes(p.ownerKey));
   assert.equal(s.post('orderCard',p).ok,true);assert.equal(s.sheets.get('RifaPro_Cartones').data.length,2);
   assert.equal(s.post('orderCard',{...p,ownerKey:crypto.randomUUID()+crypto.randomUUID()}).code,'CONFLICT');

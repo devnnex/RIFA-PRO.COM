@@ -63,6 +63,120 @@ function renderExperience() {
   document.querySelector(".page-intro").hidden = developerPage || linked;
   document.querySelector(".creator-entry").hidden = hasSession() || linked;
   $("ownerCard").hidden ||= visitor;
+  renderWinner();
+}
+const seenWinners = new Set();
+let winnerDraft = null, publishingWinner = false;
+function renderWinner() {
+  const r = activeRaffle(), winner = r?.winner;
+  $("publishWinnerButton").hidden = !isAdmin();
+  $("publishWinnerButton").textContent = winner ? "✦ Actualizar ganador" : "✦ Publicar ganador";
+  $("publishedWinner").hidden = !isAdmin() || !winner;
+  if (winner) $("publishedWinner").textContent = "Ganador publicado · " + winner.numeroId + " · " + winner.nombre;
+  if (!winner || hasSession() || developerPage || state.entryLoading || !state.online || !state.protocol || document.hidden) return;
+  const key = r.id + ":" + winner.revision + ":" + winner.publishedAt;
+  if (seenWinners.has(key) || document.querySelector("dialog[open]")) return;
+  seenWinners.add(key);
+  $("winningNumber").textContent = winner.numeroId;
+  $("winnerName").textContent = winner.nombre;
+  $("winnerConfetti").replaceChildren();
+  if (!matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    for (let i = 0; i < 36; i++) {
+      const piece = document.createElement("i");
+      piece.style.cssText = `--x:${(i * 29) % 100}%;--delay:${(i % 9) * .07}s;--turn:${i % 2 ? 240 : -210}deg;--color:${["#d4ad50", "#32926a", "#9bd5bc", "#c6a9dd"][i % 4]}`;
+      $("winnerConfetti").appendChild(piece);
+    }
+  }
+  $("winnerDialog").showModal();
+}
+function previewWinner() {
+  const number = $("winnerNumber").value.trim();
+  const record = /^\d{1,6}$/.test(number) ? state.records.find((n) => Number(n.numeroId) === Number(number) && n.estado !== "libre") : null;
+  $("winnerNamePreview").textContent = record?.clienteNombre || (number ? "Este número aún no tiene participante" : "Escribe el número ganador");
+  $("winnerNumber").setCustomValidity(record?.clienteNombre ? "" : "Elige un número asignado a un participante.");
+}
+function openWinnerEditor() {
+  if (!isAdmin() || !activeRaffle()) return;
+  if (!state.capabilities.publishWinner) { notice("La publicación estará disponible pronto", "Vuelve a intentarlo cuando el organizador haya habilitado esta función."); return; }
+  winnerDraft = { rifaId: state.activeId, revision: activeRaffle().winner?.revision || 0, requestId: uuid() };
+  $("winnerForm").reset(); $("winnerError").textContent = "";
+  $("winnerNumber").value = activeRaffle().winner?.numeroId || ""; previewWinner();
+  $("winnerEditorDialog").showModal();
+}
+async function saveWinner(event) {
+  event.preventDefault();
+  if (publishingWinner || !isAdmin() || !winnerDraft || winnerDraft.rifaId !== state.activeId) return;
+  previewWinner(); if (!$("winnerForm").reportValidity()) return;
+  const token = state.token, draft = { ...winnerDraft, numeroId: $("winnerNumber").value.trim() };
+  publishingWinner = true; $("saveWinnerButton").disabled = true; $("winnerNumber").readOnly = true;
+  $("winnerEditorDialog").querySelector("[data-close]").disabled = true;
+  $("saveWinnerButton").textContent = "Publicando…"; $("winnerError").textContent = "";
+  try {
+    const result = await api("publishWinner", draft, true);
+    if (token !== state.token || state.activeId !== draft.rifaId) return;
+    if (!result.ok || !result.winner) throw new Error("No se confirmó la publicación. Intenta de nuevo.");
+    state.writeEpoch++; activeRaffle().winner = result.winner;
+    $("winnerEditorDialog").close(); render(); toast("Ganador publicado. Ya aparece en el enlace de tu rifa.");
+  } catch (error) {
+    $("winnerError").textContent = error.message;
+    if (error.code === "STALE") { await refresh(); winnerDraft.revision = activeRaffle()?.winner?.revision || 0; winnerDraft.requestId = uuid(); }
+  } finally {
+    publishingWinner = false; $("saveWinnerButton").disabled = false; $("winnerNumber").readOnly = false;
+    $("winnerEditorDialog").querySelector("[data-close]").disabled = false;
+    $("saveWinnerButton").textContent = "Confirmar y publicar ganador ✦";
+  }
+}
+function installDevice() {
+  const ua = navigator.userAgent;
+  const ios = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  return { ios, android: /Android/.test(ua), chrome: /Chrome|CriOS|Edg/.test(ua) };
+}
+function selectInstallBrowser(browser) {
+  $("safariInstall").hidden = browser !== "safari"; $("chromeInstall").hidden = browser !== "chrome";
+  document.querySelectorAll("[data-install-browser]").forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.installBrowser === browser)));
+}
+function showInstallGuide() {
+  const device = installDevice();
+  const steps = device.ios ? ["Abre esta página en <strong>Chrome</strong>.", "A la derecha de la barra de direcciones, toca <strong>Compartir</strong>.", "Elige <strong>Añadir a la pantalla de inicio</strong>.", "Confirma el nombre y toca <strong>Añadir</strong>."] : device.android ? ["Abre esta página en <strong>Chrome</strong>.", "Toca <strong>Más (⋮)</strong>, a la derecha de la barra de direcciones.", "Elige <strong>Instalar y crear acceso directo → Instalar</strong>. En algunas versiones aparece <strong>Añadir a la pantalla de inicio → Instalar</strong>.", "Confirma <strong>Instalar</strong> y abre Rifa Pro desde su icono."] : ["Abre esta página en <strong>Chrome</strong>.", "Arriba a la derecha, toca <strong>Más (⋮)</strong>.", "Elige <strong>Enviar, guardar y compartir → Instalar página como aplicación</strong>.", "Confirma <strong>Instalar</strong>. También puedes usar el icono Instalar de la barra de direcciones, si aparece."];
+  $("chromeDeviceTitle").textContent = "Chrome · " + (device.ios ? "iPhone / iPad" : device.android ? "Android" : "Computador");
+  $("chromeInstallSteps").innerHTML = steps.map((step) => "<li>" + step + "</li>").join("");
+  selectInstallBrowser(device.ios && !device.chrome ? "safari" : "chrome");
+  $("nativeInstallButton").hidden = !state.installPrompt;
+  $("installSupport").href = "https://wa.me/" + RECEIPT_PHONE + "?text=" + encodeURIComponent("Hola, equipo de Rifa Pro 👋 Intenté agregar la app a mi pantalla de inicio, pero no pude completar el proceso.");
+  $("installDialog").showModal();
+}
+let appUpdateReady = false, lastAppInteraction = Date.now();
+function canApplyAppUpdate() {
+  return !hasSession() && !state.busy && !publishingWinner && !state.pending.size && !state.pendingRaffles.size && !cardDraft &&
+    !document.querySelector("dialog[open]") && !document.activeElement?.matches("input,textarea,select") && !$("numberSearch").value;
+}
+function applyAppUpdate() {
+  if (!appUpdateReady || state.busy || publishingWinner || state.pending.size || state.pendingRaffles.size || document.querySelector("dialog[open]")) {
+    toast("Termina lo que estás haciendo y luego toca Actualizar. Tus cambios se conservarán."); return;
+  }
+  location.reload();
+}
+function setupAppUpdates() {
+  if (!("serviceWorker" in navigator)) return;
+  const wasControlled = Boolean(navigator.serviceWorker.controller);
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (!wasControlled) return; // The first installation does not interrupt the page.
+    appUpdateReady = true; $("appUpdateNotice").hidden = false;
+    if (canApplyAppUpdate() && Date.now() - lastAppInteraction > 15000) applyAppUpdate();
+  });
+  $("applyAppUpdate").addEventListener("click", applyAppUpdate);
+  for (const name of ["pointerdown", "keydown", "input"]) document.addEventListener(name, () => { lastAppInteraction = Date.now(); }, { passive: true });
+  navigator.serviceWorker.register("./sw.js", { updateViaCache: "none" }).then((registration) => {
+    let lastCheck = 0;
+    const check = () => {
+      if (!navigator.onLine || document.hidden || Date.now() - lastCheck < 60000) return;
+      lastCheck = Date.now(); registration.update().catch(() => {});
+    };
+    check(); window.addEventListener("online", check);
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) check(); });
+    setInterval(check, 5 * 60000);
+  }).catch(() => {});
+  setInterval(() => { if (appUpdateReady && !document.hidden && canApplyAppUpdate() && Date.now() - lastAppInteraction > 30000) applyAppUpdate(); }, 10000);
 }
 function preloadPaymentQr() {
   const source = CONFIG.paymentQrUrl;
@@ -119,6 +233,18 @@ function setupModalScrolling() {
   });
 }
 function initExperience() {
+  $("publishWinnerButton").addEventListener("click", openWinnerEditor);
+  $("winnerForm").addEventListener("submit", saveWinner);
+  $("winnerNumber").addEventListener("input", () => { if (winnerDraft) winnerDraft.requestId = uuid(); previewWinner(); });
+  $("winnerEditorDialog").addEventListener("cancel", (event) => { if (publishingWinner) event.preventDefault(); });
+  document.querySelectorAll("dialog").forEach((dialog) => dialog.addEventListener("close", () => setTimeout(renderWinner, 0)));
+  document.querySelectorAll("[data-install-browser]").forEach((button) => button.addEventListener("click", () => selectInstallBrowser(button.dataset.installBrowser)));
+  $("nativeInstallButton").addEventListener("click", async () => {
+    const prompt = state.installPrompt; if (!prompt) return;
+    state.installPrompt = null; $("nativeInstallButton").hidden = true;
+    await prompt.prompt(); const choice = await prompt.userChoice;
+    if (choice.outcome === "accepted") $("installDialog").close();
+  });
   $("acquireCardButton").addEventListener("click", startPaidCard);
   $("nextCreateStep").addEventListener("click", () => { if (validateCreationStep(1)) setCreationStep(2); });
   $("previousCreateStep").addEventListener("click", () => setCreationStep(1));

@@ -9,11 +9,12 @@ const TABLES = {
   entries: { name: SHEET_NAME, headers: HEADERS },
   requests: { name: "RifaPro_v2_Solicitudes", headers: ["requestId", "action", "rifaId", "numeroId", "result"] },
   orders: { name: "RifaPro_Cartones", headers: ["rifaId", "ownerHash", "estado", "createdAt", "updatedAt", "datos", "contacto", "importe"] },
-  access: { name: "RifaPro_Accesos", headers: ["rifaId", "pinSalt", "pinHash", "failedAttempts", "lockedUntil", "pinLookup"] }
+  access: { name: "RifaPro_Accesos", headers: ["rifaId", "pinSalt", "pinHash", "failedAttempts", "lockedUntil", "pinLookup"] },
+  winners: { name: "RifaPro_Ganadores", headers: ["rifaId", "numeroId", "nombre", "publishedAt", "revision", "requestId"] }
 };
 const SESSION_SECONDS = 1800;
-const CAPABILITIES = { snapshot: true, editPrize: true, batchNumbers: true, writeSnapshot: true, independentRaffles: true, expiry: true, developerPanel: true, ownerPin: true, pinOnlyLogin: true, publicPayments: true };
-const CARD_PRICE = 1000;
+const CAPABILITIES = { snapshot: true, editPrize: true, batchNumbers: true, writeSnapshot: true, independentRaffles: true, expiry: true, developerPanel: true, ownerPin: true, pinOnlyLogin: true, publicPayments: true, publishWinner: true };
+const CARD_PRICE = 3500;
 let principal = null;
 let requestContext = null;
 let stagedBatch = null;
@@ -63,6 +64,7 @@ function doPost(event) {
     if (request.action === "developerDashboard") { platformOnly_(); return output_(developerDashboard_()); }
     if (request.action === "ownerStatus") return output_({ ok: true, order: ownerStatus_(principal) });
     if (request.action === "setOwnerPin") return output_(setOwnerPin_(payload));
+    if (request.action === "publishWinner") return output_(publishWinner_(payload));
     if (request.action === "reportPayment") return output_(reportPayment_(principal));
     if (request.action === "listOrders") { platformOnly_(); return output_({ ok: true, orders: orders_().map(orderView_) }); }
     if (request.action === "approveCard") { platformOnly_(); return output_(approveCard_(payload)); }
@@ -145,6 +147,7 @@ function legacyField_(value, format) {
 }
 function readRaffles_() {
   const groups = new Map();
+  const winners = winnerRows_();
   rows_("entries").forEach((row) => {
     const id = String(row[0] || ""); if (!id) return;
     if (!groups.has(id)) groups.set(id, []);
@@ -167,12 +170,13 @@ function readRaffles_() {
     if (!metaQuantity && maxNumber < 0) r.cantidad = 100;
     r.expiresAt = expiry_(r.fecha);
     r.expired = r.expiresAt ? Date.now() >= Date.parse(r.expiresAt) : false;
+    r.winner = winners.find((w) => w.rifaId === id)?.winner || null;
     return r;
   });
 }
 function publicCatalog_(id) {
   if (!id) return [];
-  const cache = CacheService.getScriptCache(), key = "rifapro:catalog:v5";
+  const cache = CacheService.getScriptCache(), key = "rifapro:catalog:v6";
   const cached = cache.get(key);
   let data = cached ? JSON.parse(cached) : null;
   if (!data) {
@@ -185,6 +189,34 @@ function publicCatalog_(id) {
   return data.filter((r) => r.rifaId === String(id)).map((r) => ({ ...r, expired: r.expiresAt ? Date.now() >= Date.parse(r.expiresAt) : false }));
 }
 function publicRaffle_(id) { const r = publicCatalog_(id)[0]; if (!r) fail_("Este cartón aún no está activo o ya no está disponible.", "NOT_FOUND"); return r; }
+function winnerRows_() {
+  // Existing raffles remain readable until prepararSistema creates the new table.
+  if (!requestContext.sheets.winners) {
+    if (requestContext.winnersMissing) return [];
+    const sheet = db_().getSheetByName(TABLES.winners.name);
+    if (!sheet) { requestContext.winnersMissing = true; return []; }
+    requestContext.sheets.winners = sheet;
+  }
+  return rows_("winners").map((row, i) => ({ row: i + 2, rifaId: String(row[0]), requestId: String(row[5]),
+    winner: { numeroId: String(row[1]), nombre: unsheet_(row[2]), publishedAt: isoDate_(row[3]), revision: Number(row[4]) || 0 } }));
+}
+function publishWinner_(p) {
+  return locked_(() => {
+    authorizeRaffle_(p.rifaId, false);
+    const rifa = raffle_(p.rifaId), number = validNumber_(p, rifa), requestId = requestId_(p);
+    const previous = winnerRows_().find((w) => w.rifaId === rifa.rifaId);
+    if (previous?.requestId === requestId) return { ok: true, rifaId: rifa.rifaId, winner: previous.winner };
+    if (Number(p.revision) !== (previous?.winner.revision || 0)) fail_("El ganador cambió en otra sesión. Actualiza antes de publicar.", "STALE");
+    const record = numberRows_(rifa.rifaId).find((n) => Number(n.record.numeroId) === Number(number))?.record;
+    if (!record || record.estado === "libre" || !record.clienteNombre.trim()) fail_("Elige un número asignado a un participante para publicar su nombre.");
+    const winner = { numeroId: number, nombre: record.clienteNombre, publishedAt: new Date().toISOString(), revision: (previous?.winner.revision || 0) + 1 };
+    const values = [rifa.rifaId, number, safeCell_(winner.nombre), winner.publishedAt, winner.revision, requestId];
+    const sheet = table_("winners"), entries = rows_("winners"), row = previous?.row || entries.length + 2;
+    const range = sheet.getRange(row, 1, 1, 6); range.setNumberFormat("@"); range.setValues([values]); entries[row - 2] = values;
+    invalidateCache_("rifapro:catalog:v6");
+    return { ok: true, rifaId: rifa.rifaId, winner };
+  });
+}
 function expiry_(date) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date))) return null;
   // Available through the end of the second day after the draw, Colombia time.
@@ -449,7 +481,7 @@ function createRaffleLocked_(p) {
       safeCell_(rifa.titulo), price, safeCell_(rifa.premio), safeCell_(rifa.loteria), rifa.fecha, rifa.hora,
       safeCell_(rifa.responsable), "", 0, "", safeCell_(rifa.condiciones)];
     table_("entries").appendRow(row); rows_("entries").push(row);
-    invalidateCache_("rifapro:catalog:v5");
+    invalidateCache_("rifapro:catalog:v6");
     return { ok: true, rifaId: id, rifa: { ...rifa, revision: 0 } };
 }
 function deleteRaffle_(id) {
@@ -457,7 +489,7 @@ function deleteRaffle_(id) {
     if (!String(id || "").trim()) fail_("Selecciona la rifa que quieres eliminar.");
     // Retrying a deletion after a lost response is a success, not a restore.
     if (!readRaffles_().some((r) => r.rifaId === String(id))) return { ok: true };
-    for (const key of ["entries"]) {
+    for (const key of ["entries", ...(db_().getSheetByName(TABLES.winners.name) ? ["winners"] : [])]) {
       const rows = rows_(key), sheet = table_(key);
       // Bottom-up avoids shifted row indices.
       for (let i = rows.length - 1; i >= 0; i--) if (String(rows[i][0]) === String(id)) { sheet.deleteRow(i + 2); rows.splice(i, 1); }
@@ -465,7 +497,7 @@ function deleteRaffle_(id) {
     const order = orders_().find((o) => o.rifaId === String(id));
     if (order) { const row = rows_("orders")[order.row - 2]; row[2] = "deleted"; row[4] = new Date().toISOString(); table_("orders").getRange(order.row, 1, 1, 8).setValues([row]); }
     invalidateCache_(`public:v3:${id}`);
-    invalidateCache_("rifapro:catalog:v5");
+    invalidateCache_("rifapro:catalog:v6");
     return { ok: true };
   });
 }
@@ -498,7 +530,7 @@ function updatePrize_(p) {
       const row = [rifa.rifaId, META_NUMBER_ID, "meta", String(rifa.cantidad), "", new Date().toISOString(), safeCell_(titulo), rifa.precio, safeCell_(premio), safeCell_(rifa.loteria), rifa.fecha, rifa.hora, safeCell_(rifa.responsable), "", revision, p.requestId, safeCell_(rifa.condiciones)];
       table_("entries").appendRow(row); entries.push(row);
     }
-    invalidateCache_("rifapro:catalog:v5");
+    invalidateCache_("rifapro:catalog:v6");
     return { ok: true, rifaId: rifa.rifaId, rifa: { ...rifa, premio, titulo, revision } };
   });
 }
@@ -630,11 +662,12 @@ function approveCard_(p) {
     if (order.status === "deleted") fail_("Este cartón fue eliminado y no se puede reactivar.", "NOT_FOUND");
     assertOpen_({ expiresAt: expiry_(order.draft.fecha) });
     if (order.status === "active") return { ok: true, order: orderView_(order) };
-    if (order.amount !== CARD_PRICE) fail_("El valor del cartón no coincide.");
+    // Orders keep the price quoted by this server when they were created.
+    if (![1000, CARD_PRICE].includes(order.amount)) fail_("El valor del cartón no coincide.");
     createRaffleLocked_(order.draft);
     const row = rows_("orders")[order.row - 2]; row[2] = "active"; row[4] = new Date().toISOString();
     table_("orders").getRange(order.row, 1, 1, 8).setValues([row]);
-    invalidateCache_("rifapro:catalog:v5");
+    invalidateCache_("rifapro:catalog:v6");
     return { ok: true, order: orderView_(orders_().find((o) => o.rifaId === order.rifaId)) };
   });
 }
