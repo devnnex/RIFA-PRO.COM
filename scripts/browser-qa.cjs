@@ -59,6 +59,7 @@ const fixture = '(' + require('../tests/browser-fixture.cjs').bootstrap.toString
     await click('[data-number="07"]');await set('#clienteNombre','Pedro QA');await set('#clienteTelefono','3001234567');
     const instant=await evaluate('(()=>{const start=performance.now();document.getElementById("saveNumberButton").click();return {ms:performance.now()-start,closed:!document.getElementById("numberDialog").open,pending:document.querySelector(\'[data-number="07"]\').classList.contains("pending")}})()');
     assert(instant.closed && instant.pending && instant.ms<100,JSON.stringify(instant));
+    assert.equal(await evaluate('getComputedStyle(document.querySelector(\'[data-number="07"]\')).animationName'),'number-confirmation');
     await wait('document.getElementById("noticeDialog").open');assert((await evaluate('document.getElementById("noticeTitle").textContent')).includes('es tuyo'));await click('[data-close="noticeDialog"]');
     await click('[data-number="08"]');await set('#clienteNombre','Pedro QA');await set('#clienteTelefono','3001234567');await click('#saveNumberButton');
     await wait('document.getElementById("noticeDialog").open');assert((await evaluate('document.getElementById("noticeMessage").textContent')).includes('Marta'));await click('[data-close="noticeDialog"]');
@@ -71,9 +72,16 @@ const fixture = '(' + require('../tests/browser-fixture.cjs').bootstrap.toString
     await wait(`getComputedStyle(document.querySelector('[data-number="01"]')).backgroundColor==='rgb(67, 38, 83)'`);
     assert.equal(await evaluate(`getComputedStyle(document.querySelector('[data-number="01"]')).backgroundColor`),'rgb(67, 38, 83)');await screenshot('dark-nequi-payments');await click('#themeToggle');
     await prepare('09');assert.equal(await evaluate('document.getElementById("numberForm").checkValidity()'),false);await click('input[value="transferencia"]');
-    await screenshot('payment-transfer');await click('#saveNumberButton');assert(await evaluate('!document.getElementById("numberDialog").open'));await wait('state.pending.size===0');
+    await screenshot('payment-transfer');await evaluate('window.__qa.delay=650');await click('#saveNumberButton');assert(await evaluate('!document.getElementById("numberDialog").open'));
+    assert.equal(await evaluate('document.querySelector(\'[data-number="09"] .number-state\').textContent'),'Guardando…');
+    assert.equal(await evaluate('getComputedStyle(document.querySelector(\'[data-number="09"]\')).animationName'),'number-confirmation');
+    await screenshot('number-save-animation');await wait('state.pending.size===0');await evaluate('window.__qa.delay=120');
     assert((await evaluate('document.getElementById("totalTransfer").textContent')).includes('40.000'));
     await prepare('10','efectivo');await click('#saveNumberButton');await wait('state.pending.size===0');assert((await evaluate('document.getElementById("totalCash").textContent')).includes('40.000'));
+    await evaluate('window.__qa.delay=650');await click('[data-number="10"]');await click('#releaseNumberButton');await click('#confirmAccept');
+    assert.equal(await evaluate('document.querySelector(\'[data-number="10"] .number-state\').textContent'),'Liberando…');
+    assert.equal(await evaluate('getComputedStyle(document.querySelector(\'[data-number="10"]\')).animationName'),'number-confirmation');
+    await wait('state.pending.size===0');await evaluate('window.__qa.delay=120');await prepare('10','efectivo');await click('#saveNumberButton');await wait('state.pending.size===0');
     await click('[data-edit-prize]');await set('#editPremio','');await evaluate('document.getElementById("editPremio").focus()');
     for(const digit of '500000')await send('Input.insertText',{text:digit});
     assert.equal(await evaluate('document.getElementById("editPremio").value'),'$500.000');
@@ -82,6 +90,8 @@ const fixture = '(' + require('../tests/browser-fixture.cjs').bootstrap.toString
     assert.equal(await evaluate('document.getElementById("prizePreview").textContent'),'$800.000');await set('#editTitulo','Rifa de $800.000');await evaluate('window.__qa.delay=700');
     await evaluate('document.getElementById("prizeForm").requestSubmit()');
     assert.equal(await evaluate('document.querySelector(".ticket-prize").textContent'),'$800.000');assert(await evaluate('!document.getElementById("prizeDialog").open && state.pendingRaffles.size===1'));
+    assert(await evaluate('document.getElementById("infoRifa").classList.contains("operation-busy")&&document.querySelector("#infoRifa .operation-label").textContent.includes("Guardando")'));
+    await screenshot('prize-save-animation');
     await wait('state.pendingRaffles.size===0');assert.equal(await evaluate('activeRaffle().revision'),1);
     // Several clicks can be registered while an earlier save is still in flight.
     await evaluate('window.__qa.hold=true;window.__qa.calls=[]');
@@ -138,7 +148,9 @@ const fixture = '(' + require('../tests/browser-fixture.cjs').bootstrap.toString
     assert(await evaluate('Array.from(document.querySelectorAll("#raffleDialog input")).every(el=>parseFloat(getComputedStyle(el).fontSize)>=16)'));
     await screenshot('create-card-mobile');
     await evaluate('document.querySelector(".create-body").scrollTop=document.querySelector(".create-body").scrollHeight');await screenshot('create-card-pin-mobile');
-    await click('#createRaffleButton');await wait('document.getElementById("paymentDialog").open');
+    await evaluate('window.__qa.delay=650');await click('#createRaffleButton');
+    assert(await evaluate('document.querySelector(".create-footer.operation-busy")&&document.querySelector(".create-footer .operation-label").textContent.includes("Creando")'));
+    await screenshot('create-card-saving-animation');await wait('document.getElementById("paymentDialog").open');await evaluate('window.__qa.delay=120');
     assert(await evaluate('hasSession()&&!isAdmin()&&state.ownerOrder.status==="pending"'));
     const ownerLink=await evaluate('document.getElementById("privateAccessLink").value');assert(ownerLink.includes('?rifa=')&&!ownerLink.includes('#acceso='));
     assert.equal(await evaluate('document.getElementById("creatorPin").value'),'');
@@ -187,8 +199,22 @@ const fixture = '(' + require('../tests/browser-fixture.cjs').bootstrap.toString
     assert(await evaluate('document.querySelector(".workspace").hidden&&document.getElementById("ordersPanel").hidden'));
     assert(await evaluate('document.getElementById("adminButton").hidden&&document.getElementById("developerAccessButton").closest(".brand-title")!==null'));
     await set('#developerPassword','4826');await click('#developerLoginButton');await wait('document.getElementById("developerError").textContent.includes("incorrecta")');
-    assert(await evaluate('!hasSession()'));await set('#developerPassword','7462');await click('#developerLoginButton');
+    assert(await evaluate('!hasSession()'));await evaluate('window.__qa.delay=650');await set('#developerPassword','7462');await click('#developerLoginButton');
+    assert(await evaluate('document.getElementById("developerForm").classList.contains("operation-busy")'));
+    await wait('!document.getElementById("developerLoader").hidden');await screenshot('developer-premium-loader');
+    assert.equal(await evaluate('getComputedStyle(document.querySelector("#developerLoader .loader-ticket span")).animationName'),'ticket-turn');
     await wait('document.querySelector("[data-approve-card]")!==null');assert(await evaluate('isPlatform()&&!isAdmin()&&document.getElementById("adminSummary").hidden'));
+    assert(await evaluate('document.getElementById("developerLoader").hidden&&!document.getElementById("developerContent").hidden'));
+    assert.equal(await evaluate('document.querySelectorAll(".order-row").length'),3);
+    // Cancel is read-only; a failed deletion remains visible and can be retried.
+    await evaluate('window.__qa.calls=[]');await click('[data-delete-card="discard-pending"]');await click('[data-close="confirmDialog"]');
+    assert(await evaluate('!window.__qa.calls.some(c=>c.action==="deleteRifa")'));
+    await evaluate('window.__qa.failAction="deleteRifa"');await click('[data-delete-card="discard-pending"]');await click('#confirmAccept');
+    assert(await evaluate('document.querySelector("[data-delete-card=discard-pending]").closest(".order-row").classList.contains("operation-busy")'));
+    await wait('!developerActionBusy&&!ordersLoading');assert(await evaluate('!!document.querySelector("[data-delete-card=discard-pending]")'));
+    await click('[data-delete-card="discard-pending"]');await click('#confirmAccept');
+    await screenshot('developer-deleting-animation');await wait('!document.querySelector("[data-delete-card=discard-pending]")&&!developerActionBusy');
+    await evaluate('window.__qa.delay=120');
     assert.equal(await evaluate('document.querySelectorAll(".order-row").length'),2);
     await send('Emulation.setDeviceMetricsOverride',{width:1440,height:1100,deviceScaleFactor:1,mobile:false});
     await screenshot('developer-dashboard-desktop');

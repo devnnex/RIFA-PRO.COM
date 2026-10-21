@@ -3,7 +3,7 @@ exports.bootstrap = function () {
   const legacy = new URL(location.href).searchParams.has('legacy');
   const initial = {
     catalog: [{ rifaId:'boleta', titulo:'Rifa de $500.000', premio:'$500.000', cantidad:100, precio:20000, loteria:'Boyacá', fecha:'2026-10-31', hora:'17:00', responsable:'Organizadora QA', revision:0 }],
-    records: { boleta: [{numeroId:'00',estado:'apartado',clienteNombre:'Ana Pérez',clienteTelefono:'3001234567',revision:1,updatedAt:'2026-10-20T21:01:02Z'}, {numeroId:'01',estado:'pagado',clienteNombre:'Carlos',clienteTelefono:'3001234567',paymentMethod:'transferencia',revision:1}, {numeroId:'02',estado:'pagado',clienteNombre:'Luisa',clienteTelefono:'3001234567',paymentMethod:'efectivo',revision:1}] }, orders: []
+    records: { boleta: [{numeroId:'00',estado:'apartado',clienteNombre:'Ana Pérez',clienteTelefono:'3001234567',revision:1,updatedAt:'2026-10-20T21:01:02Z'}, {numeroId:'01',estado:'pagado',clienteNombre:'Carlos',clienteTelefono:'3001234567',paymentMethod:'transferencia',revision:1}, {numeroId:'02',estado:'pagado',clienteNombre:'Luisa',clienteTelefono:'3001234567',paymentMethod:'efectivo',revision:1}] }, orders: [{rifaId:'discard-pending',titulo:'Cartón pendiente para eliminar',fecha:'2099-11-01',status:'pending',amount:3500,adminPin:'8891',ownerKey:'fixture-discard-only'}]
   };
   const data = JSON.parse(sessionStorage.getItem('qa.service') || 'null') || initial;
   const { catalog, orders } = data, sessions = new Map();
@@ -21,7 +21,7 @@ exports.bootstrap = function () {
     if(node.tagName==='SCRIPT' && node.src.startsWith('https://script.google.com')){
       const url=new URL(node.src), action=url.searchParams.get('action'), callback=url.searchParams.get('callback'),id=url.searchParams.get('rifaId');
       window.__qa.calls.push({action});
-      const list=catalog.filter(r=>legacy?true:id&&r.rifaId===id);
+      const list=catalog.filter(r=>(legacy?true:id&&r.rifaId===id)&&!orders.some(o=>o.rifaId===r.rifaId&&o.status==='deleted'));
       const result=action==='getRifas'?{data:list}:action==='getSnapshot'?{rifas:list,rifaId:list[0]?.rifaId||null,data:list[0]?records(list[0].rifaId).map(publicRecord):[]}:{data:records(id).map(publicRecord)};
       setTimeout(()=>window[callback]?.(legacy&&action==='getSnapshot'?{ok:false,error:'Acción pública no disponible.'}:{ok:true,protocol:2,...(legacy?{}:{capabilities}),...result}),new URL(location.href).searchParams.has('slow')?900:30);return node;
     }

@@ -5,6 +5,10 @@ const RECEIPT_PHONE = "573246394689";
 let cardDraft = null;
 let privateCardLink = "";
 let ordersLoading = false;
+let ordersRequest = 0;
+let developerLoaded = false;
+let developerCards = [];
+let developerActionBusy = false;
 let pinTarget = null;
 const paymentLabels = { pending: "Pendiente de pago", reviewing: "Comprobante por revisar", active: "Cartón activo", deleted: "Cartón eliminado" };
 function cardReference(order) { return order.reference || "RP-" + String(order.rifaId).replace(/-/g, "").slice(-6).toUpperCase(); }
@@ -37,6 +41,7 @@ function renderCartones() {
   $("ordersPanel").hidden = !(developerPage && isPlatform());
   if ($("ordersPanel").hidden) {
     for (const id of ["ordersList", "developerStats"]) { if ($(id).childNodes.length) $(id).replaceChildren(); state.viewCache.delete(id); }
+    $("developerLoader").hidden = true;
   }
   document.querySelector(".workspace").hidden = developerPage;
   document.querySelector(".page-intro").hidden = developerPage;
@@ -99,12 +104,15 @@ async function createPaidCard() {
   privateCardLink = cardOwnerLink(payload.rifaId, payload.ownerKey);
   try { sessionStorage.setItem("rifapro.cardAccess", privateCardLink); } catch { /* User can download the link. */ }
   button.disabled = true; button.textContent = "Preparando tu cartón…"; $("raffleError").textContent = "";
+  const feedbackContainer = $("raffleDialog").querySelector(".create-footer");
+  operationFeedback(feedbackContainer, true, "Creando tu cartón…");
   try {
     const result = await api("orderCard", payload);
+    operationFeedback(feedbackContainer, true, "Verificando tu acceso…");
     const session = await api("ownerLogin", { rifaId: payload.rifaId, ownerKey: payload.ownerKey });
     useOwnerSession(session); $("raffleDialog").close(); $("creatorPin").value = ""; $("creatorPinConfirm").value = ""; fillPayment(result.order); cardDraft = null;
   } catch (error) { $("raffleError").textContent = error.message + " Puedes reintentar sin crear otro cartón."; }
-  finally { button.disabled = false; button.textContent = "Continuar al pago · $3.500 →"; }
+  finally { operationFeedback(feedbackContainer, false); button.disabled = false; button.textContent = "Continuar al pago · $3.500 →"; }
 }
 function useOwnerSession(result) {
   if (result.role !== "owner" || !result.rifaId) throw new Error("El servidor no confirmó el acceso a este cartón.");
@@ -120,6 +128,7 @@ async function refreshOwnerOrder() {
   const result = await api("ownerStatus", {}, true); state.ownerOrder = result.order;
 }
 function clearOwnerAccess() {
+  ordersRequest++; ordersLoading = false; developerLoaded = false; developerCards = []; developerActionBusy = false;
   pinTarget = null;
   privateCardLink = ""; $("privateAccessLink").value = "";
   $("paymentDialog").close();
@@ -150,20 +159,52 @@ function downloadText(name, text, type = "text/plain;charset=utf-8") {
   const url = URL.createObjectURL(new Blob([text], { type })), a = document.createElement("a"); a.href = url; a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 async function loadOrders(event) {
-  if (!isPlatform() || ordersLoading) return;
-  const token = state.token; ordersLoading = true; if (event?.type === "click") $("refreshOrders").disabled = true;
+  if (!isPlatform() || ordersLoading || developerActionBusy) return;
+  const token = state.token, request = ++ordersRequest, initial = !developerLoaded;
+  ordersLoading = true; if (event?.type === "click") $("refreshOrders").disabled = true;
+  if (initial) { $("developerLoader").hidden = false; $("developerContent").hidden = true; }
   try {
-    const result = await api("developerDashboard", {}, true); if (state.token !== token) return;
+    const result = await api("developerDashboard", {}, true); if (state.token !== token || request !== ordersRequest || developerActionBusy) return;
     state.capabilities = result.capabilities || state.capabilities;
-    const cards = result.cards;
+    const cards = result.cards.filter((card) => card.status !== "deleted");
+    developerCards = cards; developerLoaded = true;
     const pending = cards.filter((o) => ["pending", "reviewing"].includes(o.status) && !o.expired);
     const active = cards.filter((o) => o.status === "active" && !o.expired);
     markup("developerStats", [["Cartones", cards.length],["Por aprobar",pending.length],["Activos",active.length],["Vencidos",cards.filter((o) => o.expired && o.status !== "deleted").length]].map(([label,count]) => `<article class="kpi"><strong>${label}</strong>${count}</article>`).join(""));
     const filter = $("developerFilter").value;
     const visible = cards.filter((o) => filter === "all" || (filter === "pending" ? pending.includes(o) : filter === "active" ? active.includes(o) : o.expired && o.status !== "deleted"));
-    markup("ordersList", visible.length ? visible.map((o) => `<article class="order-row"><div><strong>${escapeHTML(o.titulo)}</strong><small>${escapeHTML(o.contact || "Rifa anterior")} · <span class="card-status ${o.status}">${escapeHTML(o.status === "deleted" ? "Eliminado" : o.expired ? "Vencido" : paymentLabels[o.status])}</span></small><small>Sorteo: ${escapeHTML(formatDate(o.fecha))}${o.legacy ? " · Cartón anterior" : " · " + currencyText(o.amount) + " COP"}</small><small class="order-id">${escapeHTML(o.reference || (o.legacy ? "Cartón anterior" : cardReference(o)))}</small>${o.pinConflict ? '<small class="form-error">PIN repetido en una versión anterior. Asigna uno nuevo.</small>' : ''}</div><div class="order-actions">${pending.includes(o) ? `<button type="button" class="button button-outline button-small" data-approve-card="${escapeHTML(o.rifaId)}" data-card-amount="${Number(o.amount)}">Aprobar ${currencyText(o.amount)}</button>` : o.status === "active" ? `<a class="button button-outline button-small" target="_blank" rel="noopener noreferrer" href="${escapeHTML(rafflePublicLink(o.rifaId).href)}">Ver rifa ↗</a>` : ""}${o.status !== "deleted" ? `<button type="button" class="button button-quiet button-small" data-reset-pin="${escapeHTML(o.rifaId)}">Cambiar PIN</button>` : ''}</div></article>`).join("") : '<p class="muted">No hay cartones en este estado.</p>');
-  } catch (error) { status("No se pudo actualizar · Conservamos la vista anterior", "error"); if (event?.type === "click") toast(error.message); }
-  finally { ordersLoading = false; $("refreshOrders").disabled = false; }
+    markup("ordersList", visible.length ? visible.map((o) => `<article class="order-row"><div><strong>${escapeHTML(o.titulo)}</strong><small>${escapeHTML(o.contact || "Rifa anterior")} · <span class="card-status ${o.status}">${escapeHTML(o.status === "deleted" ? "Eliminado" : o.expired ? "Vencido" : paymentLabels[o.status])}</span></small><small>Sorteo: ${escapeHTML(formatDate(o.fecha))}${o.legacy ? " · Cartón anterior" : " · " + currencyText(o.amount) + " COP"}</small><small class="order-id">${escapeHTML(o.reference || (o.legacy ? "Cartón anterior" : cardReference(o)))}</small>${o.pinConflict ? '<small class="form-error">PIN repetido en una versión anterior. Asigna uno nuevo.</small>' : ''}</div><div class="order-actions">${pending.includes(o) ? `<button type="button" class="button button-outline button-small" data-approve-card="${escapeHTML(o.rifaId)}" data-card-amount="${Number(o.amount)}">Aprobar ${currencyText(o.amount)}</button>` : o.status === "active" ? `<a class="button button-outline button-small" target="_blank" rel="noopener noreferrer" href="${escapeHTML(rafflePublicLink(o.rifaId).href)}">Ver rifa ↗</a>` : ""}${o.status !== "deleted" ? `<button type="button" class="button button-quiet button-small" data-reset-pin="${escapeHTML(o.rifaId)}">Cambiar PIN</button><button type="button" class="button button-danger button-small" data-delete-card="${escapeHTML(o.rifaId)}">Eliminar</button>` : ''}</div></article>`).join("") : '<p class="muted">No hay cartones en este estado.</p>');
+  } catch (error) {
+    if (state.token !== token || request !== ordersRequest) return;
+    status("No se pudo actualizar · Conservamos la vista anterior", "error"); if (event?.type === "click") toast(error.message);
+    if (!developerLoaded) markup("ordersList", '<p class="muted" role="status">No pudimos cargar tus cartones. Toca Actualizar para volver a intentarlo.</p>');
+  }
+  finally {
+    if (request === ordersRequest) { ordersLoading = false; $("refreshOrders").disabled = false; $("developerLoader").hidden = true; $("developerContent").hidden = false; }
+  }
+}
+async function manageDeveloperCard(button) {
+  if (!isPlatform() || developerActionBusy || button.disabled) return;
+  const deleting = button.hasAttribute("data-delete-card"), id = deleting ? button.dataset.deleteCard : button.dataset.approveCard;
+  const card = developerCards.find((item) => item.rifaId === id); if (!card) return;
+  const token = state.token, row = button.closest(".order-row");
+  developerActionBusy = true;
+  try {
+    const accepted = await confirmAction(deleting ? "¿Eliminar este cartón?" : "¿Confirmas que recibiste " + currencyText(card.amount) + "?",
+      deleting ? 'Se eliminarán “' + card.titulo + '”, sus números, reservas y el ganador publicado. Su enlace dejará de estar disponible. Esta acción no se puede deshacer.' : "Aprueba solo después de verificar la transferencia y el comprobante de esta referencia. Se activará el enlace público del cartón.",
+      deleting ? "Eliminar cartón" : "Verificado · Activar cartón");
+    if (!accepted || token !== state.token || !isPlatform()) return;
+    ordersRequest++; ordersLoading = false; // Discard any dashboard read started before this change.
+    row.querySelectorAll("button").forEach((control) => { control.disabled = true; });
+    operationFeedback(row, true, deleting ? "Eliminando este cartón…" : "Activando el cartón…");
+    await api(deleting ? "deleteRifa" : "approveCard", { rifaId: id }, true);
+    if (token !== state.token) return;
+    toast(deleting ? "Cartón eliminado. Su enlace ya no está disponible." : "Cartón activado.");
+  } catch (error) { if (token === state.token) toast(error.message); }
+  finally {
+    operationFeedback(row, false); row.querySelectorAll("button").forEach((control) => { control.disabled = false; });
+    if (token === state.token) { developerActionBusy = false; await loadOrders(); }
+  }
 }
 function initCartones() {
   $("pinSetupButton").addEventListener("click", () => { pinTarget = state.activeId; $("pinSetupError").textContent = ""; $("pinSetupForm").reset(); $("pinSetupDialog").showModal(); });
@@ -171,12 +212,14 @@ function initCartones() {
     event.preventDefault(); const pin = $("setupPin").value;
     if (!/^\d{4}$/.test(pin) || pin !== $("setupPinConfirm").value) { $("pinSetupError").textContent = "Los PIN deben coincidir y tener cuatro dígitos."; return; }
     $("savePinButton").disabled = true;
+    operationFeedback($("pinSetupForm"), true, "Guardando el PIN…");
     try { const result = await api("setOwnerPin", { rifaId: pinTarget, pin }, true); if (!isPlatform()) state.ownerOrder = result.order; $("pinSetupDialog").close(); $("setupPin").value = ""; $("setupPinConfirm").value = ""; render(); if (isPlatform()) loadOrders(); toast("PIN actualizado. Ya se puede entrar al cartón con sus cuatro dígitos."); }
     catch (error) { $("pinSetupError").textContent = error.message; }
-    finally { $("savePinButton").disabled = false; }
+    finally { operationFeedback($("pinSetupForm"), false); $("savePinButton").disabled = false; }
   });
   $("developerForm").addEventListener("submit", async (event) => {
     event.preventDefault(); $("developerLoginButton").disabled = true; $("developerError").textContent = "";
+    operationFeedback($("developerForm"), true, "Verificando tu acceso privado…");
     const generation = state.generation;
     try {
       const result = await api("developerLogin", { password: $("developerPassword").value });
@@ -185,7 +228,7 @@ function initCartones() {
       state.token = result.token; state.expiresAt = result.expiresAt; state.role = "developer"; state.ownerOrder = null; state.generation++;
       render(); await loadOrders();
     } catch (error) { $("developerError").textContent = error.message; }
-    finally { $("developerPassword").value = ""; $("developerLoginButton").disabled = false; }
+    finally { operationFeedback($("developerForm"), false); $("developerPassword").value = ""; $("developerLoginButton").disabled = false; }
   });
   $("developerFilter").addEventListener("change", loadOrders);
   $("chooseNumbers").addEventListener("click", scrollToNumbers);
@@ -200,12 +243,10 @@ function initCartones() {
   $("openPayment").addEventListener("click", () => fillPayment(state.ownerOrder));
   $("refreshOrders").addEventListener("click", loadOrders);
   $("ordersList").addEventListener("click", async (event) => {
+    if (developerActionBusy) return;
     const reset = event.target.closest("[data-reset-pin]");
     if (reset && isPlatform()) { pinTarget = reset.dataset.resetPin; $("pinSetupError").textContent = ""; $("pinSetupForm").reset(); $("pinSetupDialog").showModal(); return; }
-    const button = event.target.closest("[data-approve-card]"); if (!button || button.disabled) return;
-    if (!await confirmAction("¿Confirmas que recibiste " + currencyText(button.dataset.cardAmount) + "?", "Aprueba solo después de verificar la transferencia y el comprobante de esta referencia. Se activará el enlace público del cartón.", "Verificado · Activar cartón")) return;
-    button.disabled = true; button.textContent = "Activando…";
-    try { await api("approveCard", { rifaId: button.dataset.approveCard }, true); toast("Cartón activado."); await loadOrders(); refresh(); } catch (error) { toast(error.message); button.disabled = false; button.textContent = "Reintentar activación"; }
+    const button = event.target.closest("[data-approve-card],[data-delete-card]"); if (button) await manageDeveloperCard(button);
   });
   const incoming = new URL(location.href);
   if (!developerPage && incoming.hash.startsWith("#acceso=")) {

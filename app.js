@@ -69,6 +69,8 @@ function syncOperations() {
   $("syncMessage").textContent = failed ? `${failed} cambio${failed > 1 ? "s" : ""} por confirmar` : `Confirmando ${operations.length} cambio${operations.length > 1 ? "s" : ""}…`;
   $("retryChanges").hidden = !failed;
   $("adminSummary").setAttribute("aria-busy", String(operations.some((op) => op.admin)));
+  const savingRaffle = state.pendingRaffles.get(state.activeId);
+  if (typeof operationFeedback === "function") operationFeedback($("infoRifa"), Boolean(savingRaffle && savingRaffle.status !== "failed"), savingRaffle?.action === "createRaffle" ? "Creando tu rifa…" : "Guardando el premio…");
 }
 function mergeRaffles(remote) {
   const map = new Map(remote.map((r) => [r.id, r]));
@@ -236,7 +238,7 @@ function renderNumbers() {
     const record = operation?.optimistic || records.get(Number(n));
     const occupied = record && record.estado !== "libre", paid = record?.estado === "pagado";
     const method = paid && record.paymentMethod;
-    const label = operation ? operation.status === "failed" ? "Por confirmar" : "Confirmando…" : paid && !method ? "Pagado" : occupied ? record.clienteNombre || (paid ? "Pagado" : "Reservado") : state.online && state.protocol ? "Elegir" : "Sin verificar";
+    const label = operation ? operation.status === "failed" ? "Por confirmar" : operation.action === "releaseNumber" ? "Liberando…" : operation.admin ? "Guardando…" : "Confirmando…" : paid && !method ? "Pagado" : occupied ? record.clienteNombre || (paid ? "Pagado" : "Reservado") : state.online && state.protocol ? "Elegir" : "Sin verificar";
     const className = ["numero", paid ? "pagado" : occupied ? "apartado" : "libre", paid && !method ? "unclassified" : "", operation ? "pending" : "", operation?.status === "failed" ? "failed" : ""].filter(Boolean).join(" ");
     if (tile.className !== className) tile.className = className;
     const text = tile.querySelector(".number-state"); if (text.textContent !== label) text.textContent = label;
@@ -401,6 +403,7 @@ async function login(event) {
   event.preventDefault();
   if (!state.protocol) { $("adminError").textContent = "El servicio debe actualizarse para habilitar el resumen privado."; return; }
   $("loginButton").disabled = true; $("loginButton").textContent = "Verificando…"; $("adminError").textContent = "";
+  operationFeedback($("adminForm"), true, "Verificando tu acceso…");
   try {
     const rifaId = state.globalPinLogin ? undefined : state.activeId || new URL(location.href).searchParams.get("rifa") || undefined;
     const result = await api("login", { pin: $("pinInput").value, ...(rifaId ? { rifaId } : {}) });
@@ -410,7 +413,7 @@ async function login(event) {
     $("pinInput").value = ""; $("adminDialog").close(); state.entryLoading = true; render(); refresh();
     toast("Sesión de administrador iniciada.");
   } catch (error) { $("adminError").textContent = error.message; }
-  finally { $("pinInput").value = ""; $("loginButton").disabled = false; $("loginButton").textContent = "Entrar al resumen →"; }
+  finally { operationFeedback($("adminForm"), false); $("pinInput").value = ""; $("loginButton").disabled = false; $("loginButton").textContent = "Entrar al resumen →"; }
 }
 function logout(notify = true) {
   const token = state.token;

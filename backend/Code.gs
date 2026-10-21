@@ -488,13 +488,13 @@ function deleteRaffle_(id) {
   return locked_(() => {
     if (!String(id || "").trim()) fail_("Selecciona la rifa que quieres eliminar.");
     // Retrying a deletion after a lost response is a success, not a restore.
-    if (!readRaffles_().some((r) => r.rifaId === String(id))) return { ok: true };
+    const order = orders_().find((o) => o.rifaId === String(id));
+    if (!order && !readRaffles_().some((r) => r.rifaId === String(id))) return { ok: true };
     for (const key of ["entries", ...(db_().getSheetByName(TABLES.winners.name) ? ["winners"] : [])]) {
       const rows = rows_(key), sheet = table_(key);
       // Bottom-up avoids shifted row indices.
       for (let i = rows.length - 1; i >= 0; i--) if (String(rows[i][0]) === String(id)) { sheet.deleteRow(i + 2); rows.splice(i, 1); }
     }
-    const order = orders_().find((o) => o.rifaId === String(id));
     if (order) { const row = rows_("orders")[order.row - 2]; row[2] = "deleted"; row[4] = new Date().toISOString(); table_("orders").getRange(order.row, 1, 1, 8).setValues([row]); }
     invalidateCache_(`public:v3:${id}`);
     invalidateCache_("rifapro:catalog:v6");

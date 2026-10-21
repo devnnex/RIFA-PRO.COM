@@ -3,6 +3,20 @@
 let creationStep = 1;
 let qrAsset = null;
 let qrAssetReady = null;
+function operationFeedback(container, busy, message = "Guardando cambios…") {
+  if (!container) return;
+  container.classList.toggle("operation-busy", busy);
+  container.setAttribute("aria-busy", String(busy));
+  let feedback = container.querySelector(":scope > .operation-feedback");
+  if (!busy) { feedback?.remove(); return; }
+  if (!feedback) {
+    feedback = document.createElement("span"); feedback.className = "operation-feedback"; feedback.setAttribute("role", "status");
+    const symbol = document.createElement("span"); symbol.className = "operation-orbit"; symbol.setAttribute("aria-hidden", "true");
+    const text = document.createElement("span"); text.className = "operation-label";
+    feedback.append(symbol, text); container.appendChild(feedback);
+  }
+  const label = feedback.querySelector(".operation-label"); if (label.textContent !== message) label.textContent = message;
+}
 function amountValue(value) { return Number(String(value).replace(/\D/g, "")) || 0; }
 function currencyText(value) { return "$" + new Intl.NumberFormat("es-CO", { maximumFractionDigits: 0 }).format(amountValue(value)); }
 function prizeText(value) {
@@ -109,6 +123,7 @@ async function saveWinner(event) {
   previewWinner(); if (!$("winnerForm").reportValidity()) return;
   const token = state.token, draft = { ...winnerDraft, numeroId: $("winnerNumber").value.trim() };
   publishingWinner = true; $("saveWinnerButton").disabled = true; $("winnerNumber").readOnly = true;
+  operationFeedback($("winnerForm"), true, "Publicando el ganador…");
   $("winnerEditorDialog").querySelector("[data-close]").disabled = true;
   $("saveWinnerButton").textContent = "Publicando…"; $("winnerError").textContent = "";
   try {
@@ -122,6 +137,7 @@ async function saveWinner(event) {
     if (error.code === "STALE") { await refresh(); winnerDraft.revision = activeRaffle()?.winner?.revision || 0; winnerDraft.requestId = uuid(); }
   } finally {
     publishingWinner = false; $("saveWinnerButton").disabled = false; $("winnerNumber").readOnly = false;
+    operationFeedback($("winnerForm"), false);
     $("winnerEditorDialog").querySelector("[data-close]").disabled = false;
     $("saveWinnerButton").textContent = "Confirmar y publicar ganador ✦";
   }

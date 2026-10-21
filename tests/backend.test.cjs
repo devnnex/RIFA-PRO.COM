@@ -281,6 +281,34 @@ test('previous orders keep their quoted fee while new cards cost 3500',()=>{
   assert.equal(s.post('approveCard',{rifaId:a.p.rifaId},dev).ok,true);
   const b=ordered(s);assert.equal(b.session.order.amount,3500);
 });
+test('developer deletes pending and reviewing orders before a raffle exists; retries cannot reactivate them',()=>{
+  const s=server(),dev=s.login(),a=ordered(s),b=ordered(s);
+  s.post('reportPayment',{},b.token);
+  assert.equal(s.post('deleteRifa',{rifaId:a.p.rifaId},b.token).code,'FORBIDDEN');
+  assert.equal(s.post('deleteRifa',{rifaId:a.p.rifaId},a.token).code,'PAYMENT_PENDING');
+  for(const item of [a,b]) {
+    assert.equal(s.post('deleteRifa',{rifaId:item.p.rifaId},dev).ok,true);
+    assert.equal(s.post('deleteRifa',{rifaId:item.p.rifaId},dev).ok,true);
+    assert.equal(s.post('ownerStatus',{},item.token).order.status,'deleted');
+    assert.equal(s.post('approveCard',{rifaId:item.p.rifaId},dev).code,'NOT_FOUND');
+    assert.equal(s.post('orderCard',item.p).order.status,'deleted');
+    assert.deepEqual(s.get('getSnapshot',{rifaId:item.p.rifaId}).rifas,[]);
+  }
+  assert.equal(s.get('getSnapshot',{rifaId:'test'}).rifas.length,1);
+});
+test('developer deletion removes one active raffle and its winner while preserving other raffles',()=>{
+  const s=server(),dev=s.login(),a=ordered(s),b=ordered(s);
+  for(const item of [a,b]) {
+    s.post('approveCard',{rifaId:item.p.rifaId},dev);
+    s.post('reserveNumber',reservation({rifaId:item.p.rifaId}));
+    assert.equal(s.post('publishWinner',reservation({rifaId:item.p.rifaId,revision:0}),item.token).ok,true);
+  }
+  assert.equal(s.post('deleteRifa',{rifaId:a.p.rifaId},dev).ok,true);
+  assert.equal(s.post('adminSnapshot',{rifaId:a.p.rifaId},a.token).code,'PAYMENT_PENDING');
+  assert.deepEqual(s.get('getSnapshot',{rifaId:a.p.rifaId}).rifas,[]);
+  assert.equal(s.get('getSnapshot',{rifaId:b.p.rifaId}).rifas[0].winner.nombre,'Ana Pérez');
+  assert.equal(s.get('getSnapshot',{rifaId:b.p.rifaId}).data.length,1);
+});
 test('creating a card charges a fixed server amount and stores only a hashed owner key',()=>{
   const s=server(),p=card({amount:0,status:'active'}),a=ordered(s,p);
   assert.equal(a.session.order.amount,3500);assert.equal(a.session.order.status,'pending');
